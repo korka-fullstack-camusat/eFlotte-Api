@@ -60,7 +60,7 @@ def list_pneumatiques(
     snc: str | None = None,
     search: str | None = None,
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=500),
+    page_size: int = Query(10, ge=1, le=10000),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):

@@ -24,8 +24,8 @@ services:
       gunicorn app.main:app
       --worker-class uvicorn.workers.UvicornWorker
       --bind 0.0.0.0:8050
-      --workers 3
-      --timeout 120
+      --workers 1
+      --timeout 300
       --graceful-timeout 30
       --keep-alive 5
       --access-logfile -

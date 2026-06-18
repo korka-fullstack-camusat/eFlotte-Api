@@ -39,7 +39,7 @@ def _cf(v):
 @router.get("", response_model=dict)
 def list_sinistres(
     page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=500),
+    page_size: int = Query(10, ge=1, le=10000),
     search: str = Query(""),
     statut: str = Query(""),
     type_location: str = Query(""),

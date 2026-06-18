@@ -63,7 +63,7 @@ def list_couts(
     type_location: str | None = Query(None),
     type_cout: str | None = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(10, ge=1, le=200),
+    page_size: int = Query(10, ge=1, le=10000),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
