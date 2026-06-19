@@ -53,6 +53,7 @@ class ImportGlobalResult(BaseModel):
     entretiens_bis: SectionResult
     pannes: SectionResult
     pneumatiques: SectionResult
+    sinistres: SectionResult = SectionResult(skipped=True, skip_reason="Fichier sinistres non fourni")
 
 
 class ImportGlobalLogOut(BaseModel):
@@ -612,6 +613,84 @@ def _pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
     return r
 
 
+def _sinistres(xls: pd.ExcelFile, db: Session) -> SectionResult:
+    """Parse le fichier ETAT SUIVI DES SINISTRES (feuille DONNEES)."""
+    r = SectionResult()
+    # Cherche la feuille par "DONNEES" ou "SINISTRE"
+    sheet = next(
+        (s for s in xls.sheet_names
+         if "DONNEE" in s.upper() or "SINISTRE" in s.upper()),
+        None
+    )
+    if not sheet:
+        r.skipped = True; r.skip_reason = "Feuille DONNEES/SINISTRES introuvable"; return r
+
+    try:
+        df = xls.parse(sheet, header=0)
+        df.columns = [" ".join(str(c).split()) for c in df.columns]
+    except Exception as e:
+        r.skipped = True; r.skip_reason = str(e); return r
+
+    cols = list(df.columns)
+    col_mat      = _find_col(cols, "MATRICULE")
+    col_date_dec = _find_col(cols, "DATE DE DECLAR", "DATE DECLAR", "DECLARATION")
+    col_type     = _find_col(cols, "PROPRIETE", "TYPE LOCATION", "TYPE_LOCATION")
+    col_snc      = _find_col(cols, "SNC")
+    col_projet   = _find_col(cols, "PROJET")
+    col_circ     = _find_col(cols, "CIRCONSTANCE")
+    col_doc      = _find_col(cols, "DOCUMENTATION")
+    col_traiter  = _find_col(cols, "TRAITER")
+    col_statut   = _find_col(cols, "STATUT")
+    col_pos_veh  = _find_col(cols, "POSITION VEHICULE", "POSITION")
+    col_lieu     = _find_col(cols, "LIEU IMMOBILI", "LIEU")
+    col_obs      = _find_col(cols, "OBSERVATION")
+    col_chauff   = _find_col(cols, "NOM CHAUFFEUR", "CHAUFFEUR", "NOM")
+    col_montant  = _find_col(cols, "MONTANT", "INDEMNI")
+    col_date_sin = _find_col(cols, "DATE SINISTRE", "DATE SIN")
+
+    if not col_mat:
+        r.skipped = True; r.skip_reason = "Colonne MATRICULE introuvable"; return r
+
+    for idx, row in df.iterrows():
+        try:
+            matricule = _cs(row[col_mat])
+            if not matricule:
+                continue
+            vals = dict(
+                matricule=matricule,
+                date_sinistre=_cd(row[col_date_sin]) if col_date_sin else None,
+                date_declaration=_cd(row[col_date_dec]) if col_date_dec else None,
+                type_location=_cs(row[col_type]) if col_type else None,
+                nom_chauffeur=_cs(row[col_chauff]) if col_chauff else None,
+                snc=_cs(row[col_snc]) if col_snc else None,
+                projet=_cs(row[col_projet]) if col_projet else None,
+                circonstances=_cs(row[col_circ]) if col_circ else None,
+                documentation=bool(int(row[col_doc])) if col_doc and not pd.isna(row.get(col_doc, float("nan"))) else False,
+                traiter=bool(int(row[col_traiter])) if col_traiter and not pd.isna(row.get(col_traiter, float("nan"))) else False,
+                statut=_cs(row[col_statut]) if col_statut else None,
+                position_vehicule=_cs(row[col_pos_veh]) if col_pos_veh else None,
+                lieu_immobilisation=_cs(row[col_lieu]) if col_lieu else None,
+                observations=_cs(row[col_obs]) if col_obs else None,
+                montant_indemnite=_cf(row[col_montant]) if col_montant else None,
+            )
+            existing = db.query(SuiviSinistre).filter_by(
+                matricule=matricule,
+                date_declaration=vals["date_declaration"],
+                circonstances=vals["circonstances"],
+            ).first()
+            if existing:
+                for k, v in vals.items():
+                    setattr(existing, k, v)
+                r.updated += 1
+            else:
+                db.add(SuiviSinistre(**vals))
+                r.created += 1
+        except Exception as e:
+            r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
+    db.commit()
+    return r
+
+
 def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
     sheet = next((s for s in xls.sheet_names if "PNEUM" in s.upper()), None)
@@ -734,6 +813,7 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
 @router.post("", response_model=ImportGlobalResult)
 async def import_global(
     file: UploadFile = File(...),
+    sinistres_file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_editor),
 ):
@@ -742,6 +822,15 @@ async def import_global(
         xls = pd.ExcelFile(io.BytesIO(content))
     except Exception:
         raise HTTPException(400, "Fichier Excel illisible")
+
+    sin_result = SectionResult(skipped=True, skip_reason="Fichier sinistres non fourni")
+    if sinistres_file:
+        sin_content = await sinistres_file.read()
+        try:
+            xls_sin = pd.ExcelFile(io.BytesIO(sin_content))
+            sin_result = _sinistres(xls_sin, db)
+        except Exception as e:
+            sin_result = SectionResult(skipped=True, skip_reason=f"Fichier sinistres illisible : {e}")
 
     result = ImportGlobalResult(
         vehicules      = _vehicules(xls, db),
@@ -753,6 +842,7 @@ async def import_global(
         entretiens_bis = _entretiens_bis(xls, db),
         pannes         = _pannes(xls, db),
         pneumatiques   = _pneumatiques(xls, db),
+        sinistres      = sin_result,
     )
 
     results_dict = result.model_dump()
