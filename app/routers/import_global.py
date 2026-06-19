@@ -22,6 +22,7 @@ from ..models.entretien import EntretienVehicule
 from ..models.entretien_bis import EntretienBis
 from ..models.suivi_panne import SuiviPanne
 from ..models.pneumatique import Pneumatique
+from ..models.suivi_sinistre import SuiviSinistre
 from ..services.auth_service import get_current_user, require_editor
 
 router = APIRouter(prefix="/api/import-global", tags=["Import global"])
@@ -94,37 +95,56 @@ def _cf(v) -> float | None:
         return None
 
 
+def _find_col(columns: list[str], *keywords: str) -> str | None:
+    """Trouve la première colonne dont le nom contient l'un des mots-clés (insensible à la casse)."""
+    for kw in keywords:
+        for c in columns:
+            if kw.upper() in str(c).upper():
+                return c
+    return None
+
+
+def _parse_sheet(xls: pd.ExcelFile, *name_fragments: str, header: int = 0) -> tuple[pd.DataFrame | None, str]:
+    """Parse une feuille identifiée par des fragments de nom. Retourne (df, erreur)."""
+    sheet = next(
+        (s for s in xls.sheet_names
+         if all(f.upper() in s.upper() for f in name_fragments)),
+        None
+    )
+    if not sheet:
+        return None, f"Feuille contenant {name_fragments} introuvable"
+    try:
+        df = xls.parse(sheet, header=header)
+        df.columns = [" ".join(str(c).split()) for c in df.columns]
+        return df, ""
+    except Exception as e:
+        return None, str(e)
+
+
 # ── parsers ──────────────────────────────────────────────────────────────────
 
 def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "FLOTTE GLOBALE" in s.upper()), None)
-    if not sheet:
-        r.skipped = True; r.skip_reason = "Feuille 'FLOTTE GLOBALE' introuvable"; return r
-    try:
-        df = xls.parse(sheet, header=0)
-        df.columns = [str(c).strip() for c in df.columns]
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
+    df, err = _parse_sheet(xls, "FLOTTE GLOBALE")
+    if df is None:
+        r.skipped = True; r.skip_reason = err; return r
 
-    col_plaque = next((c for c in df.columns if "PLAQUE" in c.upper() or "IMMATRICULATION" in c.upper()), None)
+    col_plaque = _find_col(list(df.columns), "PLAQUE", "IMMATRICULATION")
     if not col_plaque:
         r.skipped = True; r.skip_reason = "Colonne plaque introuvable"; return r
 
+    cols = list(df.columns)
     col_map = {
-        "type_location": next((c for c in df.columns if "TYPE DE LOCATION" in c.upper() or "TYPE DE LOCAT" in c.upper()), None),
-        "fournisseur":   next((c for c in df.columns if c.strip().lower() in ("fournisseur",)), None),
-        "type_vehicule": next((c for c in df.columns if "TYPE VEHICULE" in c.upper() or "TYPE VÉ" in c.upper()), None),
-        "n_chassis":     next((c for c in df.columns if "CHASSIS" in c.upper()), None),
-        "modele":        next((c for c in df.columns if "MODEL" in c.upper()), None),
-        "couleur":       next((c for c in df.columns if "COULEUR" in c.upper()), None),
-        "autocollant":   next((c for c in df.columns if "AUTOCOL" in c.upper()), None),
-        "grille":        next((c for c in df.columns if c.strip().upper() == "GRILLE"), None),
-        "croche":        next((c for c in df.columns if c.strip().upper() == "CROCHE"), None),
-        "extincteurs":   next((c for c in df.columns if "EXTINC" in c.upper()), None),
-        "trousse_secours": next((c for c in df.columns if "TROUSSE" in c.upper()), None),
-        "peage":         next((c for c in df.columns if c.strip().upper() == "PEAGE"), None),
-        "carte_carburant": next((c for c in df.columns if "CARTE" in c.upper() and "CARB" in c.upper()), None),
+        "type_location":   _find_col(cols, "TYPE DE LOCATION", "TYPE DE LOCAT"),
+        "fournisseur":     _find_col(cols, "FOURNISSEUR"),
+        "type_vehicule":   _find_col(cols, "TYPE VEHICULE", "TYPE VÉ"),
+        "n_chassis":       _find_col(cols, "CHASSIS"),
+        "modele":          _find_col(cols, "MODEL"),
+        "couleur":         _find_col(cols, "COULEUR"),
+        "autocollant":     _find_col(cols, "AUTOCOL"),
+        "extincteurs":     _find_col(cols, "EXTINC"),
+        "trousse_secours": _find_col(cols, "TROUSSE"),
+        "carte_carburant": _find_col(cols, "CARTE", "CARB"),
     }
 
     for idx, row in df.iterrows():
@@ -132,8 +152,8 @@ def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
             plaque = _cs(row[col_plaque])
             if not plaque:
                 continue
-            vals = {k: _cs(row[v]) if v and v in df.columns and not pd.isna(row[v]) else None
-                    for k, v in col_map.items()}
+            vals = {k: _cs(row[v]) if v and not pd.isna(row.get(v, float("nan"))) else None
+                    for k, v in col_map.items() if v}
             existing = db.query(Vehicule).filter_by(plaque_immatriculation=plaque).first()
             if existing:
                 for k, v in vals.items():
@@ -151,31 +171,37 @@ def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
 def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "DATA_FLOTTE" in s.upper()), None)
-    if not sheet:
-        r.skipped = True; r.skip_reason = "Feuille 'DATA_FLOTTES' introuvable"; return r
-    try:
-        df = xls.parse(sheet, header=0)
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
+    df, err = _parse_sheet(xls, "DATA_FLOTTE")
+    if df is None:
+        r.skipped = True; r.skip_reason = err; return r
 
-    required = {"Plaque d'immatriculation", "Mois", "Type_Cout", "Valeur"}
-    if not required.issubset(set(df.columns)):
-        r.skipped = True; r.skip_reason = f"Colonnes manquantes : {required - set(df.columns)}"; return r
+    cols = list(df.columns)
+    col_plaque   = _find_col(cols, "PLAQUE", "IMMATRICULATION")
+    col_mois     = _find_col(cols, "MOIS")
+    col_type     = _find_col(cols, "TYPE_COUT", "TYPE COUT")
+    col_valeur   = _find_col(cols, "VALEUR")
+    col_tl       = _find_col(cols, "TYPE DE LOCATION", "TYPE DE LOCAT")
+    col_fourn    = _find_col(cols, "FOURNISSEUR")
+    col_tv       = _find_col(cols, "TYPE VEHICULE")
+
+    if not all([col_plaque, col_mois, col_type, col_valeur]):
+        r.skipped = True
+        r.skip_reason = f"Colonnes manquantes parmi : plaque={col_plaque}, mois={col_mois}, type={col_type}, valeur={col_valeur}"
+        return r
 
     for idx, row in df.iterrows():
         try:
-            plaque = str(row["Plaque d'immatriculation"]).strip()
-            mois_val = row["Mois"]
-            type_cout_val = row["Type_Cout"]
-            if pd.isna(mois_val) or pd.isna(type_cout_val) or not plaque or plaque.lower() == "nan":
+            plaque = _cs(row[col_plaque])
+            mois_val = row[col_mois]
+            type_cout_val = row[col_type]
+            if not plaque or pd.isna(mois_val) or pd.isna(type_cout_val):
                 continue
             mois: DateType = pd.to_datetime(mois_val).date().replace(day=1)
             type_cout = str(type_cout_val).strip().upper()
-            valeur = float(row["Valeur"]) if not pd.isna(row["Valeur"]) else 0.0
-            type_location = _cs(row.get("TYPE DE LOCATION") or row.get("TYPE DE LOCAT"))
-            fournisseur   = _cs(row.get("Fournisseur"))
-            type_vehicule = _cs(row.get("Type Vehicule"))
+            valeur = float(row[col_valeur]) if not pd.isna(row[col_valeur]) else 0.0
+            type_location = _cs(row[col_tl]) if col_tl else None
+            fournisseur   = _cs(row[col_fourn]) if col_fourn else None
+            type_vehicule = _cs(row[col_tv]) if col_tv else None
             existing = db.query(CoutFlotte).filter_by(
                 plaque_immatriculation=plaque, mois=mois, type_cout=type_cout
             ).first()
@@ -199,36 +225,45 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
 def _missions(xls: pd.ExcelFile, db: Session) -> SectionResult:
     from datetime import datetime
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "CHAUFFEUR" in s.upper() and "POLE" in s.upper()), None)
-    if not sheet:
-        r.skipped = True; r.skip_reason = "Feuille 'CHAUFFEUR POLES' introuvable"; return r
-    try:
-        df = xls.parse(sheet, header=1)
-        df.columns = [str(c).strip() for c in df.columns]
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
+    df, err = _parse_sheet(xls, "CHAUFFEUR", "POLE", header=1)
+    if df is None:
+        r.skipped = True; r.skip_reason = err; return r
 
-    required = {"DATE", "IMMA", "CHAUFFEUR", "DEMANDEUR", "PROJET", "DESTINATION"}
-    if not required.issubset(set(df.columns)):
-        r.skipped = True; r.skip_reason = f"Colonnes manquantes : {required - set(df.columns)}"; return r
+    cols = list(df.columns)
+    col_date  = _find_col(cols, "DATE")
+    col_imma  = _find_col(cols, "IMMA", "IMMATRICULATION")
+    if not col_date or not col_imma:
+        r.skipped = True; r.skip_reason = f"Colonnes manquantes : date={col_date}, imma={col_imma}"; return r
 
     def pd_(v) -> DateType | None:
-        if pd.isna(v) or not isinstance(v, (pd.Timestamp, datetime)): return None
-        return pd.to_datetime(v).date()
+        if pd.isna(v): return None
+        try: return pd.to_datetime(v).date()
+        except: return None
 
     for idx, row in df.iterrows():
         try:
-            mission_date = pd_(row["DATE"])
-            imma = _cs(row["IMMA"])
+            mission_date = pd_(row[col_date])
+            imma = _cs(row[col_imma])
             if not mission_date or not imma:
                 continue
+            col_chauf = _find_col(cols, "CHAUFFEUR")
+            col_dem   = _find_col(cols, "DEMANDEUR")
+            col_tel   = _find_col(cols, "TELEPHONE", "TEL")
+            col_proj  = _find_col(cols, "PROJET")
+            col_dest  = _find_col(cols, "DESTINATION")
+            col_dep   = _find_col(cols, "DEPART")
+            col_ret   = _find_col(cols, "RETOUR")
+            col_com   = _find_col(cols, "COMMENTAIRE")
             vals = dict(
                 date=mission_date, immatriculation=imma,
-                chauffeur=_cs(row.get("CHAUFFEUR")), demandeur=_cs(row.get("DEMANDEUR")),
-                telephone=_cs(row.get("TELEPHONE")), projet=_cs(row.get("PROJET")),
-                destination=_cs(row.get("DESTINATION")),
-                date_depart=pd_(row.get("DATE DEPART")), date_retour=pd_(row.get("DATE RETOUR")),
-                commentaires=_cs(row.get("COMMENTAIRES")),
+                chauffeur=_cs(row[col_chauf]) if col_chauf else None,
+                demandeur=_cs(row[col_dem]) if col_dem else None,
+                telephone=_cs(row[col_tel]) if col_tel else None,
+                projet=_cs(row[col_proj]) if col_proj else None,
+                destination=_cs(row[col_dest]) if col_dest else None,
+                date_depart=pd_(row[col_dep]) if col_dep else None,
+                date_retour=pd_(row[col_ret]) if col_ret else None,
+                commentaires=_cs(row[col_com]) if col_com else None,
             )
             existing = db.query(MissionChauffeur).filter_by(
                 date=mission_date, immatriculation=imma,
@@ -248,28 +283,40 @@ def _missions(xls: pd.ExcelFile, db: Session) -> SectionResult:
 def _devis(xls: pd.ExcelFile, db: Session) -> SectionResult:
     from datetime import datetime
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "SUIVI" in s.upper() and "DEVIS" in s.upper()), None)
-    if not sheet:
+
+    # Essayer plusieurs valeurs de header pour trouver la bonne ligne
+    sheet_name = next(
+        (s for s in xls.sheet_names if "SUIVI" in s.upper() and "DEVIS" in s.upper()), None
+    )
+    if not sheet_name:
         r.skipped = True; r.skip_reason = "Feuille 'SUIVI DES DEVIS' introuvable"; return r
-    try:
-        df = xls.parse(sheet, header=4)
-        df.columns = [" ".join(str(c).split()) for c in df.columns]
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
 
-    if "DESCRIPTIONS" not in df.columns:
-        r.skipped = True; r.skip_reason = "Colonne DESCRIPTIONS introuvable"; return r
+    df = None
+    for h in range(0, 8):
+        try:
+            candidate = xls.parse(sheet_name, header=h)
+            candidate.columns = [" ".join(str(c).split()) for c in candidate.columns]
+            # La bonne ligne header contient "DESCRIPTION" ou "DEVIS"
+            if any("DESCRIPTION" in str(c).upper() or "DEVIS" in str(c).upper() for c in candidate.columns):
+                df = candidate
+                break
+        except Exception:
+            continue
 
+    if df is None:
+        r.skipped = True; r.skip_reason = "Impossible de détecter la ligne d'en-tête SUIVI DES DEVIS"; return r
+
+    cols = list(df.columns)
     col_map = {
-        "descriptions":  next((c for c in df.columns if "DESCRIPTION" in c.upper()), None),
-        "numero_devis":  next((c for c in df.columns if "DEVIS" in c.upper() and ("N°" in c or "#" in c)), None),
-        "valeur_devis":  next((c for c in df.columns if "VALEUR" in c.upper() and "DEVIS" in c.upper()), None),
-        "date":          next((c for c in df.columns if c.strip().upper() == "DATE"), None),
-        "montant":       next((c for c in df.columns if c.strip().upper() == "MONTANT"), None),
-        "sous_traitant": next((c for c in df.columns if "SOUS-TRAIT" in c.upper() or "SUPPLIER" in c.upper()), None),
-        "matricule":     next((c for c in df.columns if c.strip().upper() == "MATRICULE"), None),
-        "code_snc":      next((c for c in df.columns if "CODE SNC" in c.upper()), None),
-        "po_emis":       next((c for c in df.columns if "PO EMIS" in c.upper()), None),
+        "descriptions":  _find_col(cols, "DESCRIPTION"),
+        "numero_devis":  _find_col(cols, "N° DEVIS", "N°DEVIS", "# DEVIS", "DEVIS"),
+        "valeur_devis":  _find_col(cols, "VALEUR DEVIS", "VALEUR"),
+        "date":          next((c for c in cols if c.strip().upper() == "DATE"), None),
+        "montant":       next((c for c in cols if c.strip().upper() in ("MONTANT", "MONTANT (FCFA)")), None),
+        "sous_traitant": _find_col(cols, "SOUS-TRAIT", "SUPPLIER", "SOUS_TRAIT"),
+        "matricule":     next((c for c in cols if c.strip().upper() == "MATRICULE"), None),
+        "code_snc":      _find_col(cols, "CODE SNC"),
+        "po_emis":       _find_col(cols, "PO EMIS", "PO"),
     }
 
     def pd_(v) -> DateType | None:
@@ -278,9 +325,13 @@ def _devis(xls: pd.ExcelFile, db: Session) -> SectionResult:
         try: return pd.to_datetime(v, dayfirst=True).date()
         except: return None
 
+    col_desc = col_map["descriptions"]
+    if not col_desc:
+        r.skipped = True; r.skip_reason = "Colonne DESCRIPTIONS introuvable"; return r
+
     for idx, row in df.iterrows():
         try:
-            desc = _cs(row[col_map["descriptions"]]) if col_map["descriptions"] else None
+            desc = _cs(row[col_desc])
             if not desc: continue
             vals = dict(
                 descriptions=desc,
@@ -294,8 +345,7 @@ def _devis(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 po_emis=_cs(row[col_map["po_emis"]]) if col_map["po_emis"] else None,
             )
             existing = db.query(SuiviDevis).filter_by(
-                descriptions=desc,
-                numero_devis=vals["numero_devis"],
+                descriptions=desc, numero_devis=vals["numero_devis"],
             ).first()
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
@@ -303,43 +353,37 @@ def _devis(xls: pd.ExcelFile, db: Session) -> SectionResult:
             else:
                 db.add(SuiviDevis(**vals)); r.created += 1
         except Exception as e:
-            r.errors.append({"ligne": int(idx) + 5, "message": str(e)})
+            r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
     db.commit()
     return r
 
 
 def _checklists(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "CHECK" in s.upper() and "LIST" in s.upper()), None)
-    if not sheet:
-        r.skipped = True; r.skip_reason = "Feuille 'SUIVI DES CHECK LISTS VL' introuvable"; return r
-    try:
-        df = xls.parse(sheet, header=1)
-        df.columns = [" ".join(str(c).split()) for c in df.columns]
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
+    df, err = _parse_sheet(xls, "CHECK", "LIST", header=1)
+    if df is None:
+        r.skipped = True; r.skip_reason = err; return r
 
-    col_plaque = next((c for c in df.columns if "REG" in c.upper() or "PLAQUE" in c.upper() or "IMMA" in c.upper()), None)
+    cols = list(df.columns)
+    col_plaque = _find_col(cols, "REG", "PLAQUE", "IMMA")
     if not col_plaque:
         r.skipped = True; r.skip_reason = "Colonne plaque introuvable"; return r
 
-    # Colonnes semaines = tout ce qui n'est pas une colonne fixe connue
-    fixed = {"Brand", "Model", col_plaque, "Label", "Car Group"}
-    semaine_cols = [c for c in df.columns if c not in fixed and str(c).strip()]
+    fixed = {_find_col(cols, "BRAND"), _find_col(cols, "MODEL"), col_plaque,
+             _find_col(cols, "LABEL"), _find_col(cols, "CAR GROUP"), None}
+    semaine_cols = [c for c in cols if c not in fixed and str(c).strip()]
 
     seen: dict[str, CheckListVL] = {}
-
     for idx, row in df.iterrows():
         try:
             plaque = _cs(row[col_plaque])
             if not plaque: continue
-            semaines = {}
-            for s in semaine_cols:
-                v = _cs(row[s])
-                semaines[s] = v
+            semaines = {s: _cs(row[s]) for s in semaine_cols}
             vals = dict(
-                brand=_cs(row.get("Brand")), model=_cs(row.get("Model")),
-                label=_cs(row.get("Label")), car_group=_cs(row.get("Car Group")),
+                brand=_cs(row.get(_find_col(cols, "BRAND") or "")),
+                model=_cs(row.get(_find_col(cols, "MODEL") or "")),
+                label=_cs(row.get(_find_col(cols, "LABEL") or "")),
+                car_group=_cs(row.get(_find_col(cols, "CAR GROUP") or "")),
                 semaines=semaines,
             )
             existing = seen.get(plaque) or db.query(CheckListVL).filter_by(plaque_immatriculation=plaque).first()
@@ -358,33 +402,72 @@ def _checklists(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
 def _entretiens(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "ENTRTIEN" in s.upper().replace(" ", "") and "BIS" not in s.upper()), None)
-    if not sheet:
-        r.skipped = True; r.skip_reason = "Feuille 'ENTRTIENS' introuvable"; return r
-    try:
-        df = xls.parse(sheet, header=2)
-        cols = list(df.columns)
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
+    df, err = _parse_sheet(xls, "ENTRTIEN", header=2)
+    if df is None:
+        # Essayer aussi "ENTRETIEN" sans le BIS
+        sheet = next(
+            (s for s in xls.sheet_names
+             if "ENTRETIEN" in s.upper().replace("_", " ") and "BIS" not in s.upper()),
+            None
+        )
+        if not sheet:
+            r.skipped = True; r.skip_reason = "Feuille ENTRTIENS introuvable"; return r
+        try:
+            df = xls.parse(sheet, header=2)
+            df.columns = [" ".join(str(c).split()) for c in df.columns]
+        except Exception as e:
+            r.skipped = True; r.skip_reason = str(e); return r
 
-    if len(cols) < 5 + len(PALIERS_KM):
-        r.skipped = True; r.skip_reason = "Structure inattendue"; return r
+    cols = list(df.columns)
+    if len(cols) < 5:
+        r.skipped = True; r.skip_reason = f"Trop peu de colonnes ({len(cols)}) dans ENTRTIENS"; return r
 
-    col_tl, col_f, col_tv, col_mat, col_nom = cols[:5]
-    col_paliers = cols[5:5 + len(PALIERS_KM)]
-    col_reste = cols[5 + len(PALIERS_KM)] if len(cols) > 5 + len(PALIERS_KM) else None
+    # Identifier les colonnes par nom
+    col_tl  = _find_col(cols, "TYPE DE LOCATION", "TYPE LOCATION", "TYPE LOC")
+    col_f   = _find_col(cols, "FOURNISSEUR")
+    col_tv  = _find_col(cols, "TYPE VEHICULE", "TYPE VEH")
+    col_mat = _find_col(cols, "MATRICULE", "PLAQUE", "IMMA")
+    col_nom = _find_col(cols, "NOM", "CHAUFFEUR")
+
+    # Fallback positionnel si les noms ne matchent pas
+    if not col_mat:
+        col_tl, col_f, col_tv, col_mat, col_nom = cols[0], cols[1], cols[2], cols[3], cols[4]
+
+    # Colonnes paliers = colonnes dont le nom est un nombre entier
+    palier_cols: dict[int, str] = {}
+    for c in cols:
+        try:
+            km = int(float(str(c).replace(" ", "")))
+            if km in PALIERS_KM:
+                palier_cols[km] = c
+        except (ValueError, TypeError):
+            pass
+
+    # Si pas de colonne palier trouvée, utiliser les colonnes positionnelles
+    if not palier_cols:
+        fixed_cols = {col_tl, col_f, col_tv, col_mat, col_nom}
+        remaining = [c for c in cols if c not in fixed_cols]
+        for i, km in enumerate(PALIERS_KM):
+            if i < len(remaining):
+                palier_cols[km] = remaining[i]
+
+    col_reste = _find_col(cols, "REST")
 
     for idx, row in df.iterrows():
         try:
-            plaque = _cs(row[col_mat])
+            plaque = _cs(row[col_mat]) if col_mat else None
             if not plaque: continue
-            paliers = {str(km): (_cf(row[col]) if not pd.isna(row[col]) else None)
-                       for km, col in zip(PALIERS_KM, col_paliers)}
+            paliers = {
+                str(km): (_cf(row[col]) if not pd.isna(row[col]) else None)
+                for km, col in palier_cols.items()
+            }
             vals = dict(
-                type_location=_cs(row[col_tl]), fournisseur=_cs(row[col_f]),
-                type_vehicule=_cs(row[col_tv]), nom_chauffeur=_cs(row[col_nom]),
+                type_location=_cs(row[col_tl]) if col_tl else None,
+                fournisseur=_cs(row[col_f]) if col_f else None,
+                type_vehicule=_cs(row[col_tv]) if col_tv else None,
+                nom_chauffeur=_cs(row[col_nom]) if col_nom else None,
                 paliers=paliers,
-                reste=_cf(row[col_reste]) if col_reste and not pd.isna(row[col_reste]) else None,
+                reste=_cf(row[col_reste]) if col_reste and not pd.isna(row.get(col_reste, float("nan"))) else None,
             )
             existing = db.query(EntretienVehicule).filter_by(plaque_immatriculation=plaque).first()
             if existing:
@@ -400,39 +483,67 @@ def _entretiens(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
 def _entretiens_bis(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "ENTRETIEN BIS" in s.upper() or "ENTRETIEN_BIS" in s.upper().replace(" ", "_")), None)
+    sheet = next(
+        (s for s in xls.sheet_names if "BIS" in s.upper() and "ENTRETIEN" in s.upper().replace("_", " ")),
+        None
+    )
     if not sheet:
         r.skipped = True; r.skip_reason = "Feuille 'ENTRETIEN BIS' introuvable"; return r
+
     try:
         df = xls.parse(sheet, header=2)
+        df.columns = [" ".join(str(c).split()) for c in df.columns]
     except Exception as e:
         r.skipped = True; r.skip_reason = str(e); return r
 
-    col_rt, col_statut, col_modele, col_mat, col_kms_notes = list(df.columns)[:5]
-    palier_cols = {}
-    for col in df.columns:
+    cols = list(df.columns)
+    if len(cols) < 4:
+        r.skipped = True; r.skip_reason = f"Trop peu de colonnes ({len(cols)}) dans ENTRETIEN BIS"; return r
+
+    # Identification par nom, fallback positionnel
+    col_rt     = _find_col(cols, "RT") or cols[0]
+    col_statut = _find_col(cols, "STATUT") or (cols[1] if len(cols) > 1 else None)
+    col_modele = _find_col(cols, "MODEL", "MODELE") or (cols[2] if len(cols) > 2 else None)
+    col_mat    = _find_col(cols, "MATRICULE", "PLAQUE", "IMMA") or (cols[3] if len(cols) > 3 else None)
+    col_kms    = _find_col(cols, "KMS", "KILOMETRAGE", "NOTES") or (cols[4] if len(cols) > 4 else None)
+
+    palier_cols: dict[int, str] = {}
+    for c in cols:
         try:
-            v = int(float(str(col)))
-            if v in PALIERS_KM_BIS: palier_cols[v] = col
-        except: pass
-    col_reste = next((c for c in df.columns if str(c).strip().upper() in ("REST", "RESTE")), None)
+            km = int(float(str(c).replace(" ", "")))
+            if km in PALIERS_KM_BIS:
+                palier_cols[km] = c
+        except (ValueError, TypeError):
+            pass
+
+    # Fallback positionnel pour les paliers
+    if not palier_cols:
+        fixed = {col_rt, col_statut, col_modele, col_mat, col_kms}
+        remaining = [c for c in cols if c not in fixed]
+        for i, km in enumerate(PALIERS_KM_BIS):
+            if i < len(remaining):
+                palier_cols[km] = remaining[i]
+
+    col_reste = _find_col(cols, "REST")
 
     for idx, row in df.iterrows():
         try:
-            plaque = _cs(row[col_mat])
+            plaque = _cs(row[col_mat]) if col_mat else None
             if not plaque: continue
-            raw = row[col_kms_notes]
-            kms = _cf(raw)
-            notes = None if kms is not None else (_cs(raw))
-            paliers = {}
-            for km in PALIERS_KM_BIS:
-                col = palier_cols.get(km)
-                paliers[str(km)] = _cf(row[col]) if col and not pd.isna(row[col]) else None
+            raw = row[col_kms] if col_kms else None
+            kms = _cf(raw) if raw is not None else None
+            notes = None if kms is not None else _cs(raw)
+            paliers = {
+                str(km): (_cf(row[col]) if col in df.columns and not pd.isna(row.get(col, float("nan"))) else None)
+                for km, col in palier_cols.items()
+            }
             vals = dict(
-                rt=_cs(row[col_rt]), statut=_cs(row[col_statut]),
-                modele=_cs(row[col_modele]), kms_depart=kms, notes=notes,
+                rt=_cs(row[col_rt]) if col_rt else None,
+                statut=_cs(row[col_statut]) if col_statut else None,
+                modele=_cs(row[col_modele]) if col_modele else None,
+                kms_depart=kms, notes=notes,
                 paliers=paliers,
-                reste=_cf(row[col_reste]) if col_reste and not pd.isna(row.get(col_reste)) else None,
+                reste=_cf(row[col_reste]) if col_reste and not pd.isna(row.get(col_reste, float("nan"))) else None,
             )
             existing = db.query(EntretienBis).filter_by(plaque_immatriculation=plaque).first()
             if existing:
@@ -448,56 +559,47 @@ def _entretiens_bis(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
 def _pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "PANNE" in s.upper()), None)
-    if not sheet:
-        r.skipped = True; r.skip_reason = "Feuille 'SUIVI DES PANNE' introuvable"; return r
-    try:
-        df = xls.parse(sheet, header=0)
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
+    df, err = _parse_sheet(xls, "PANNE")
+    if df is None:
+        r.skipped = True; r.skip_reason = err; return r
 
-    aliases = {
-        "date": ["date"], "immatriculation": ["imma", "immatriculation", "plaque"],
-        "nom": ["nom"], "garage": ["garage"],
-        "nature_panne": ["nature", "panne", "non disponib"],
-        "date_indisponibilite": ["indisponib", "date d'indispo"],
-        "projet": ["projet"],
-        "date_fin_reparation": ["fin de répa", "fin de repa", "date de fin"],
-        "site": ["site"], "immobilisation_jrs": ["immobilisation", "immo", "jrs"],
-        "commentaire": ["commentaire", "observation"],
-    }
-    col_map = {}
-    for col in df.columns:
-        cl = str(col).lower().strip()
-        for field, keys in aliases.items():
-            if field not in col_map and any(k in cl for k in keys):
-                col_map[field] = col
+    cols = list(df.columns)
+    col_imma    = _find_col(cols, "IMMA", "IMMATRICULATION", "PLAQUE")
+    col_date    = _find_col(cols, "DATE")
+    col_nom     = _find_col(cols, "NOM")
+    col_garage  = _find_col(cols, "GARAGE")
+    col_nature  = _find_col(cols, "NATURE", "PANNE", "NON DISPONIB", "INDISPONIB")
+    col_dindispo = _find_col(cols, "INDISPONIB", "DATE D'INDISPO")
+    col_projet  = _find_col(cols, "PROJET")
+    col_fin_rep = _find_col(cols, "FIN DE RÉP", "FIN DE REP", "DATE DE FIN")
+    col_site    = _find_col(cols, "SITE")
+    col_immo    = _find_col(cols, "IMMOBILISATION", "IMMO", "JRS")
+    col_com     = _find_col(cols, "COMMENTAIRE", "OBSERVATION")
 
-    if "immatriculation" not in col_map:
+    if not col_imma:
         r.skipped = True; r.skip_reason = "Colonne IMMA introuvable"; return r
-
-    def g(field): return col_map.get(field)
 
     for idx, row in df.iterrows():
         try:
-            imma = _cs(row[g("immatriculation")]) if g("immatriculation") else None
+            imma = _cs(row[col_imma])
             if not imma: continue
-            date_val = _cd(row[g("date")]) if g("date") else None
+            date_val = _cd(row[col_date]) if col_date else None
+            nature   = _cs(row[col_nature]) if col_nature else None
+            immo_raw = _cf(row[col_immo]) if col_immo else None
             vals = dict(
                 date=date_val, immatriculation=imma,
-                nom=_cs(row[g("nom")]) if g("nom") else None,
-                garage=_cs(row[g("garage")]) if g("garage") else None,
-                nature_panne=_cs(row[g("nature_panne")]) if g("nature_panne") else None,
-                date_indisponibilite=_cd(row[g("date_indisponibilite")]) if g("date_indisponibilite") else None,
-                projet=_cs(row[g("projet")]) if g("projet") else None,
-                date_fin_reparation=_cd(row[g("date_fin_reparation")]) if g("date_fin_reparation") else None,
-                site=_cs(row[g("site")]) if g("site") else None,
-                immobilisation_jrs=int(_cf(row[g("immobilisation_jrs")])) if g("immobilisation_jrs") and _cf(row[g("immobilisation_jrs")]) is not None else None,
-                commentaire=_cs(row[g("commentaire")]) if g("commentaire") else None,
+                nom=_cs(row[col_nom]) if col_nom else None,
+                garage=_cs(row[col_garage]) if col_garage else None,
+                nature_panne=nature,
+                date_indisponibilite=_cd(row[col_dindispo]) if col_dindispo else None,
+                projet=_cs(row[col_projet]) if col_projet else None,
+                date_fin_reparation=_cd(row[col_fin_rep]) if col_fin_rep else None,
+                site=_cs(row[col_site]) if col_site else None,
+                immobilisation_jrs=int(immo_raw) if immo_raw is not None else None,
+                commentaire=_cs(row[col_com]) if col_com else None,
             )
             existing = db.query(SuiviPanne).filter_by(
-                immatriculation=imma, date=date_val,
-                nature_panne=vals["nature_panne"],
+                immatriculation=imma, date=date_val, nature_panne=nature,
             ).first()
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
@@ -529,14 +631,14 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
         return "" if s.upper() in ("NAN", "N/A", "NA", "NONE") else s
 
     def gf_idx(vals_, ci):
-        if ci >= len(vals_): return None
+        if ci is None or ci >= len(vals_): return None
         v = vals_[ci]
         if pd.isna(v): return None
         try: return float(v)
         except: return None
 
     def gd_idx(vals_, ci):
-        if ci >= len(vals_): return None
+        if ci is None or ci >= len(vals_): return None
         v = vals_[ci]
         if pd.isna(v): return None
         try: return pd.to_datetime(v, dayfirst=True).date()
@@ -545,41 +647,40 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
             except: return None
 
     for idx, row in df.iterrows():
-        vals = [gs(v) for v in row.values]
-        col_a = vals[0] if vals else ""
-        col_c = vals[2] if len(vals) > 2 else ""
-
-        if not any(vals): continue
-
-        if not col_a:
-            cand = col_c
-            if cand and any(kw in cand.upper() for kw in SECTION_KEYWORDS_PNE):
-                current_fournisseur = cand.strip()
-                col_map = {}
-            continue
-
-        if col_a.upper() in ("IMMA", "IMMATRICULATION", "PLAQUE"):
-            col_map = {}
-            for ci, v in enumerate(vals):
-                vu = v.upper()
-                if any(k in vu for k in ("IMMA", "PLAQUE")): col_map["immatriculation"] = ci
-                elif "CHAUFF" in vu: col_map["chauffeur"] = ci
-                elif "KILOM" in vu: col_map["kilometrage"] = ci
-                elif "N PNEU" in vu or (vu.startswith("N") and "PNEU" in vu): col_map["nb_pneus"] = ci
-                elif "REF" in vu: col_map["ref_pneu"] = ci
-                elif "ETAT" in vu: col_map["etat"] = ci
-                elif "SNC" in vu: col_map["snc"] = ci
-                elif "ZONE" in vu or "INTERVENTION" in vu or "FOOR" in vu: col_map["zone_intervention"] = ci
-                elif "DATE" in vu and "PREV" in vu: col_map["date_prevue"] = ci
-                elif "COMMENT" in vu: col_map["commentaire"] = ci
-            continue
-
-        if not col_a or col_a.upper() in ("NAT", "NAN", "N/A", "NA"):
-            continue
-        if "immatriculation" not in col_map:
-            continue
-
         try:
+            vals = [gs(v) for v in row.values]
+            col_a = vals[0] if vals else ""
+            col_c = vals[2] if len(vals) > 2 else ""
+
+            if not any(vals): continue
+
+            if not col_a:
+                if col_c and any(kw in col_c.upper() for kw in SECTION_KEYWORDS_PNE):
+                    current_fournisseur = col_c.strip()
+                    col_map = {}
+                continue
+
+            if col_a.upper() in ("IMMA", "IMMATRICULATION", "PLAQUE"):
+                col_map = {}
+                for ci, v in enumerate(vals):
+                    vu = v.upper()
+                    if any(k in vu for k in ("IMMA", "PLAQUE")): col_map["immatriculation"] = ci
+                    elif "CHAUFF" in vu: col_map["chauffeur"] = ci
+                    elif "KILOM" in vu: col_map["kilometrage"] = ci
+                    elif "N PNEU" in vu or (vu.startswith("N") and "PNEU" in vu): col_map["nb_pneus"] = ci
+                    elif "REF" in vu: col_map["ref_pneu"] = ci
+                    elif "ETAT" in vu: col_map["etat"] = ci
+                    elif "SNC" in vu: col_map["snc"] = ci
+                    elif "ZONE" in vu or "INTERVENTION" in vu or "FOOR" in vu: col_map["zone_intervention"] = ci
+                    elif "DATE" in vu and "PREV" in vu: col_map["date_prevue"] = ci
+                    elif "COMMENT" in vu: col_map["commentaire"] = ci
+                continue
+
+            if not col_a or col_a.upper() in ("NAT", "NAN", "N/A", "NA"):
+                continue
+            if "immatriculation" not in col_map:
+                continue
+
             imma_ci = col_map["immatriculation"]
             imma = gs(row.values[imma_ci]) if imma_ci < len(row.values) else ""
             if not imma or imma.upper() in ("NAT", "NAN"): continue
@@ -601,10 +702,8 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
                     if s and any(kw in s.upper() for kw in TYPE_LOCATION_KEYWORDS):
                         row_tl = s
 
-            nb = None
-            if "nb_pneus" in col_map:
-                v_nb = gf_idx(row.values, col_map["nb_pneus"])
-                nb = int(v_nb) if v_nb is not None else None
+            nb_raw = gf_idx(row.values, col_map.get("nb_pneus"))
+            nb = int(nb_raw) if nb_raw is not None else None
 
             values = dict(
                 fournisseur=current_fournisseur, type_location=row_tl,
@@ -612,7 +711,7 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 kilometrage=row_km, nb_pneus=nb,
                 ref_pneu=get_s("ref_pneu"), etat=get_s("etat"),
                 snc=get_s("snc"), zone_intervention=get_s("zone_intervention"),
-                date_prevue=gd_idx(row.values, col_map["date_prevue"]) if "date_prevue" in col_map else None,
+                date_prevue=gd_idx(row.values, col_map.get("date_prevue")),
                 commentaire=get_s("commentaire"),
             )
             existing = db.query(Pneumatique).filter_by(
@@ -656,7 +755,6 @@ async def import_global(
         pneumatiques   = _pneumatiques(xls, db),
     )
 
-    # Persist history log
     results_dict = result.model_dump()
     sections = results_dict.values()
     log = ImportGlobalLog(
@@ -698,3 +796,29 @@ def get_history(
         )
         for log in logs
     ]
+
+
+@router.delete("/clear-all")
+def clear_all_data(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_editor),
+):
+    """Supprime toutes les données métier (hors utilisateurs et logs)."""
+    counts = {}
+    for Model, label in [
+        (CoutFlotte,       "couts_flotte"),
+        (MissionChauffeur, "missions_chauffeur"),
+        (SuiviDevis,       "suivi_devis"),
+        (CheckListVL,      "checklists_vl"),
+        (EntretienVehicule,"entretiens"),
+        (EntretienBis,     "entretiens_bis"),
+        (SuiviPanne,       "suivi_pannes"),
+        (Pneumatique,      "pneumatiques"),
+        (SuiviSinistre,    "suivi_sinistres"),
+        (Vehicule,         "vehicules"),
+        (ImportGlobalLog,  "import_logs"),
+    ]:
+        n = db.query(Model).delete(synchronize_session=False)
+        counts[label] = n
+    db.commit()
+    return {"deleted": counts, "message": "Toutes les données ont été supprimées."}

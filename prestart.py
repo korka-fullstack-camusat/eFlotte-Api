@@ -5,7 +5,11 @@ Crée les tables et l'utilisateur admin par défaut.
 import time
 import sqlalchemy
 from app.database import Base, engine, SessionLocal
-from app.models import User, Vehicule, CoutFlotte, EntretienVehicule, EntretienBis, MissionChauffeur, SuiviDevis, CheckListVL, SuiviPanne
+from app.models import (  # noqa: F401 — tous importés pour Base.metadata.create_all()
+    User, Vehicule, CoutFlotte, EntretienVehicule, EntretienBis,
+    MissionChauffeur, SuiviDevis, CheckListVL, SuiviPanne,
+    Pneumatique, SuiviSinistre, ImportGlobalLog,
+)
 from app.services.auth_service import hash_password
 
 print("→ Attente de la base de données...")
