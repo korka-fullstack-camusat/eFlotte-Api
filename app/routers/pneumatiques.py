@@ -175,6 +175,11 @@ async def import_pneumatiques(
             except Exception:
                 return None
 
+    existing_map = {
+        (p.immatriculation, p.fournisseur): p
+        for p in db.query(Pneumatique).all()
+    }
+
     for idx, row in df.iterrows():
         vals = [gs(v) for v in row.values]
         col_a = vals[0] if vals else ""
@@ -275,17 +280,17 @@ async def import_pneumatiques(
             )
 
             # Upsert: unique by (immatriculation, fournisseur)
-            existing = db.query(Pneumatique).filter(
-                Pneumatique.immatriculation == imma,
-                Pneumatique.fournisseur == current_fournisseur,
-            ).first()
+            key = (imma, current_fournisseur)
+            existing = existing_map.get(key)
 
             if existing:
                 for k, v in values.items():
                     setattr(existing, k, v)
                 updated += 1
             else:
-                db.add(Pneumatique(**values))
+                new_p = Pneumatique(**values)
+                db.add(new_p)
+                existing_map[key] = new_p
                 created += 1
 
         except Exception as e:

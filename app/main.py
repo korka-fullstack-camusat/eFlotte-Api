@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from .routers import auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur, suivi_devis, checklists_vl, suivi_pannes, pneumatiques, import_global, suivi_sinistres
 
 app = FastAPI(
@@ -7,6 +8,8 @@ app = FastAPI(
     description="Gestion de la flotte automobile — suivi global, coûts, entretiens, pannes",
     version="1.0.0",
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.add_middleware(
     CORSMiddleware,

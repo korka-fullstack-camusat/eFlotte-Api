@@ -154,6 +154,11 @@ async def import_sinistres(file: UploadFile = File(...), db: Session = Depends(g
     created = updated = 0
     errors = []
 
+    existing_map = {
+        (s.matricule, s.date_declaration, s.circonstances): s
+        for s in db.query(SuiviSinistre).all()
+    }
+
     for idx, row in df.iterrows():
         matr = _cs(row[c_matr]) if c_matr else None
         if not matr:
@@ -181,17 +186,16 @@ async def import_sinistres(file: UploadFile = File(...), db: Session = Depends(g
         )
 
         try:
-            existing = db.query(SuiviSinistre).filter(
-                SuiviSinistre.matricule == matr,
-                SuiviSinistre.date_declaration == values["date_declaration"],
-                SuiviSinistre.circonstances == values["circonstances"],
-            ).first()
+            key = (matr, values["date_declaration"], values["circonstances"])
+            existing = existing_map.get(key)
             if existing:
                 for k, v in values.items():
                     setattr(existing, k, v)
                 updated += 1
             else:
-                db.add(SuiviSinistre(**values))
+                new_s = SuiviSinistre(**values)
+                db.add(new_s)
+                existing_map[key] = new_s
                 created += 1
         except Exception as e:
             errors.append({"ligne": int(idx) + 1, "message": str(e)})

@@ -175,6 +175,8 @@ async def import_entretiens_bis(
         except (TypeError, ValueError):
             return None
 
+    existing_map = {e.plaque_immatriculation: e for e in db.query(EntretienBis).all()}
+
     for idx, row in df.iterrows():
         try:
             plaque = row[col_matricule]
@@ -210,7 +212,7 @@ async def import_entretiens_bis(
                     prochain = next((km for km in PALIERS_KM_BIS if km > kms_depart_val), None)
                     reste_val = (prochain - kms_depart_val) if prochain is not None else None
 
-            existing = db.query(EntretienBis).filter_by(plaque_immatriculation=plaque).first()
+            existing = existing_map.get(plaque)
             values = dict(
                 rt=clean_str(row[col_rt]),
                 statut=clean_str(row[col_statut]),
@@ -225,7 +227,9 @@ async def import_entretiens_bis(
                     setattr(existing, k, v)
                 updated += 1
             else:
-                db.add(EntretienBis(plaque_immatriculation=plaque, **values))
+                new_e = EntretienBis(plaque_immatriculation=plaque, **values)
+                db.add(new_e)
+                existing_map[plaque] = new_e
                 created += 1
         except Exception as e:
             errors.append({"ligne": int(idx) + 4, "message": str(e)})

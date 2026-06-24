@@ -98,6 +98,8 @@ async def import_entretiens(
     updated = 0
     errors = []
 
+    existing_map = {e.plaque_immatriculation: e for e in db.query(EntretienVehicule).all()}
+
     for idx, row in df.iterrows():
         try:
             plaque = row[col_matricule]
@@ -115,7 +117,7 @@ async def import_entretiens(
             for km, col in zip(PALIERS_KM, col_paliers):
                 paliers[str(km)] = clean_num(row[col])
 
-            existing = db.query(EntretienVehicule).filter_by(plaque_immatriculation=plaque).first()
+            existing = existing_map.get(plaque)
             values = dict(
                 type_location=clean_str(row[col_type_location]),
                 fournisseur=clean_str(row[col_fournisseur]),
@@ -129,7 +131,9 @@ async def import_entretiens(
                     setattr(existing, k, v)
                 updated += 1
             else:
-                db.add(EntretienVehicule(plaque_immatriculation=plaque, **values))
+                new_e = EntretienVehicule(plaque_immatriculation=plaque, **values)
+                db.add(new_e)
+                existing_map[plaque] = new_e
                 created += 1
         except Exception as e:
             errors.append({"ligne": int(idx) + 4, "message": str(e)})

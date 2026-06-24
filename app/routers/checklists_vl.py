@@ -167,7 +167,8 @@ async def import_checklists(
     def clean_str(v) -> str | None:
         return None if pd.isna(v) else str(v).strip()
 
-    seen_in_batch: dict[str, CheckListVL] = {}
+    seen_in_batch: dict[str, CheckListVL] = {c.plaque_immatriculation: c for c in db.query(CheckListVL).all()}
+    touched: set[str] = set()
 
     for idx, row in df.iterrows():
         try:
@@ -187,11 +188,11 @@ async def import_checklists(
                 semaines=semaines,
             )
 
-            existing = seen_in_batch.get(plaque) or db.query(CheckListVL).filter_by(plaque_immatriculation=plaque).first()
+            existing = seen_in_batch.get(plaque)
             if existing:
                 for k, v in values.items():
                     setattr(existing, k, v)
-                if plaque not in seen_in_batch:
+                if plaque not in touched:
                     updated += 1
                 seen_in_batch[plaque] = existing
             else:
@@ -199,6 +200,7 @@ async def import_checklists(
                 db.add(new_checklist)
                 seen_in_batch[plaque] = new_checklist
                 created += 1
+            touched.add(plaque)
         except Exception as e:
             errors.append({"ligne": int(idx) + 3, "message": str(e)})
 

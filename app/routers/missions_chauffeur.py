@@ -138,6 +138,11 @@ async def import_missions(
     def clean_str(v) -> str | None:
         return None if pd.isna(v) else str(v).strip()
 
+    existing_map = {
+        (m.date, m.immatriculation, m.demandeur, m.destination): m
+        for m in db.query(MissionChauffeur).all()
+    }
+
     for idx, row in df.iterrows():
         try:
             mission_date = parse_date(row["DATE"])
@@ -159,22 +164,16 @@ async def import_missions(
                 commentaires=clean_str(row["COMMENTAIRES"]),
             )
 
-            existing = (
-                db.query(MissionChauffeur)
-                .filter_by(
-                    date=mission_date,
-                    immatriculation=immatriculation,
-                    demandeur=values["demandeur"],
-                    destination=values["destination"],
-                )
-                .first()
-            )
+            key = (mission_date, immatriculation, values["demandeur"], values["destination"])
+            existing = existing_map.get(key)
             if existing:
                 for k, v in values.items():
                     setattr(existing, k, v)
                 updated += 1
             else:
-                db.add(MissionChauffeur(**values))
+                new_m = MissionChauffeur(**values)
+                db.add(new_m)
+                existing_map[key] = new_m
                 created += 1
         except Exception as e:
             errors.append({"ligne": int(idx) + 3, "message": str(e)})

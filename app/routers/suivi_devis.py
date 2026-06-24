@@ -152,6 +152,11 @@ async def import_devis(
     def clean_str(v) -> str | None:
         return None if pd.isna(v) else str(v).strip()
 
+    existing_map = {
+        (d.descriptions, d.numero_devis, d.matricule): d
+        for d in db.query(SuiviDevis).all()
+    }
+
     for idx, row in df.iterrows():
         try:
             descriptions = clean_str(row["DESCRIPTIONS"])
@@ -170,21 +175,16 @@ async def import_devis(
                 po_emis=clean_str(row["PO EMIS"]),
             )
 
-            existing = (
-                db.query(SuiviDevis)
-                .filter_by(
-                    descriptions=descriptions,
-                    numero_devis=values["numero_devis"],
-                    matricule=values["matricule"],
-                )
-                .first()
-            )
+            key = (descriptions, values["numero_devis"], values["matricule"])
+            existing = existing_map.get(key)
             if existing:
                 for k, v in values.items():
                     setattr(existing, k, v)
                 updated += 1
             else:
-                db.add(SuiviDevis(**values))
+                new_d = SuiviDevis(**values)
+                db.add(new_d)
+                existing_map[key] = new_d
                 created += 1
         except Exception as e:
             errors.append({"ligne": int(idx) + 6, "message": str(e)})

@@ -2,7 +2,11 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import declarative_base, sessionmaker
 from .config import settings
 
-engine = create_engine(settings.database_url)
+engine = create_engine(
+    settings.database_url,
+    pool_pre_ping=True,   # évite les connexions mortes après suspension de la base (ex: Neon autosuspend)
+    pool_recycle=300,
+)
 
 
 @event.listens_for(engine, "connect")

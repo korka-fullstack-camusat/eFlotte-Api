@@ -334,6 +334,11 @@ async def import_couts(
     updated = 0
     errors = []
 
+    existing_map = {
+        (c.plaque_immatriculation, c.mois, c.type_cout): c
+        for c in db.query(CoutFlotte).all()
+    }
+
     for idx, row in df.iterrows():
         try:
             plaque = str(row["Plaque d'immatriculation"]).strip()
@@ -350,11 +355,8 @@ async def import_couts(
             fournisseur = None if pd.isna(row["Fournisseur"]) else str(row["Fournisseur"]).strip()
             type_vehicule = None if pd.isna(row["Type Vehicule"]) else str(row["Type Vehicule"]).strip()
 
-            existing = (
-                db.query(CoutFlotte)
-                .filter_by(plaque_immatriculation=plaque, mois=mois, type_cout=type_cout)
-                .first()
-            )
+            key = (plaque, mois, type_cout)
+            existing = existing_map.get(key)
             if existing:
                 existing.valeur = valeur
                 existing.type_location = type_location
@@ -362,7 +364,7 @@ async def import_couts(
                 existing.type_vehicule = type_vehicule
                 updated += 1
             else:
-                db.add(CoutFlotte(
+                new_c = CoutFlotte(
                     type_location=type_location,
                     fournisseur=fournisseur,
                     type_vehicule=type_vehicule,
@@ -370,7 +372,9 @@ async def import_couts(
                     mois=mois,
                     type_cout=type_cout,
                     valeur=valeur,
-                ))
+                )
+                db.add(new_c)
+                existing_map[key] = new_c
                 created += 1
         except Exception as e:
             errors.append({"ligne": int(idx) + 2, "message": str(e)})

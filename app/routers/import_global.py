@@ -148,6 +148,8 @@ def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
         "carte_carburant": _find_col(cols, "CARTE", "CARB"),
     }
 
+    existing_map = {v.plaque_immatriculation: v for v in db.query(Vehicule).all()}
+
     for idx, row in df.iterrows():
         try:
             plaque = _cs(row[col_plaque])
@@ -155,14 +157,16 @@ def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 continue
             vals = {k: _cs(row[v]) if v and not pd.isna(row.get(v, float("nan"))) else None
                     for k, v in col_map.items() if v}
-            existing = db.query(Vehicule).filter_by(plaque_immatriculation=plaque).first()
+            existing = existing_map.get(plaque)
             if existing:
                 for k, v in vals.items():
                     if v is not None:
                         setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(Vehicule(plaque_immatriculation=plaque, **vals))
+                new_v = Vehicule(plaque_immatriculation=plaque, **vals)
+                db.add(new_v)
+                existing_map[plaque] = new_v
                 r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
@@ -190,6 +194,11 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
         r.skip_reason = f"Colonnes manquantes parmi : plaque={col_plaque}, mois={col_mois}, type={col_type}, valeur={col_valeur}"
         return r
 
+    existing_map = {
+        (c.plaque_immatriculation, c.mois, c.type_cout): c
+        for c in db.query(CoutFlotte).all()
+    }
+
     for idx, row in df.iterrows():
         try:
             plaque = _cs(row[col_plaque])
@@ -203,9 +212,8 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
             type_location = _cs(row[col_tl]) if col_tl else None
             fournisseur   = _cs(row[col_fourn]) if col_fourn else None
             type_vehicule = _cs(row[col_tv]) if col_tv else None
-            existing = db.query(CoutFlotte).filter_by(
-                plaque_immatriculation=plaque, mois=mois, type_cout=type_cout
-            ).first()
+            key = (plaque, mois, type_cout)
+            existing = existing_map.get(key)
             if existing:
                 existing.valeur = valeur
                 existing.type_location = type_location
@@ -213,9 +221,11 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 existing.type_vehicule = type_vehicule
                 r.updated += 1
             else:
-                db.add(CoutFlotte(type_location=type_location, fournisseur=fournisseur,
-                                   type_vehicule=type_vehicule, plaque_immatriculation=plaque,
-                                   mois=mois, type_cout=type_cout, valeur=valeur))
+                new_c = CoutFlotte(type_location=type_location, fournisseur=fournisseur,
+                                    type_vehicule=type_vehicule, plaque_immatriculation=plaque,
+                                    mois=mois, type_cout=type_cout, valeur=valeur)
+                db.add(new_c)
+                existing_map[key] = new_c
                 r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
@@ -240,6 +250,11 @@ def _missions(xls: pd.ExcelFile, db: Session) -> SectionResult:
         if pd.isna(v): return None
         try: return pd.to_datetime(v).date()
         except: return None
+
+    existing_map = {
+        (m.date, m.immatriculation, m.demandeur, m.destination): m
+        for m in db.query(MissionChauffeur).all()
+    }
 
     for idx, row in df.iterrows():
         try:
@@ -266,15 +281,16 @@ def _missions(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 date_retour=pd_(row[col_ret]) if col_ret else None,
                 commentaires=_cs(row[col_com]) if col_com else None,
             )
-            existing = db.query(MissionChauffeur).filter_by(
-                date=mission_date, immatriculation=imma,
-                demandeur=vals["demandeur"], destination=vals["destination"]
-            ).first()
+            key = (mission_date, imma, vals["demandeur"], vals["destination"])
+            existing = existing_map.get(key)
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(MissionChauffeur(**vals)); r.created += 1
+                new_m = MissionChauffeur(**vals)
+                db.add(new_m)
+                existing_map[key] = new_m
+                r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 3, "message": str(e)})
     db.commit()
@@ -330,6 +346,11 @@ def _devis(xls: pd.ExcelFile, db: Session) -> SectionResult:
     if not col_desc:
         r.skipped = True; r.skip_reason = "Colonne DESCRIPTIONS introuvable"; return r
 
+    existing_map = {
+        (d.descriptions, d.numero_devis): d
+        for d in db.query(SuiviDevis).all()
+    }
+
     for idx, row in df.iterrows():
         try:
             desc = _cs(row[col_desc])
@@ -345,14 +366,16 @@ def _devis(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 code_snc=_cs(row[col_map["code_snc"]]) if col_map["code_snc"] else None,
                 po_emis=_cs(row[col_map["po_emis"]]) if col_map["po_emis"] else None,
             )
-            existing = db.query(SuiviDevis).filter_by(
-                descriptions=desc, numero_devis=vals["numero_devis"],
-            ).first()
+            key = (desc, vals["numero_devis"])
+            existing = existing_map.get(key)
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(SuiviDevis(**vals)); r.created += 1
+                new_d = SuiviDevis(**vals)
+                db.add(new_d)
+                existing_map[key] = new_d
+                r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
     db.commit()
@@ -374,7 +397,8 @@ def _checklists(xls: pd.ExcelFile, db: Session) -> SectionResult:
              _find_col(cols, "LABEL"), _find_col(cols, "CAR GROUP"), None}
     semaine_cols = [c for c in cols if c not in fixed and str(c).strip()]
 
-    seen: dict[str, CheckListVL] = {}
+    seen: dict[str, CheckListVL] = {c.plaque_immatriculation: c for c in db.query(CheckListVL).all()}
+    touched: set[str] = set()
     for idx, row in df.iterrows():
         try:
             plaque = _cs(row[col_plaque])
@@ -387,14 +411,15 @@ def _checklists(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 car_group=_cs(row.get(_find_col(cols, "CAR GROUP") or "")),
                 semaines=semaines,
             )
-            existing = seen.get(plaque) or db.query(CheckListVL).filter_by(plaque_immatriculation=plaque).first()
+            existing = seen.get(plaque)
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
-                if plaque not in seen: r.updated += 1
+                if plaque not in touched: r.updated += 1
                 seen[plaque] = existing
             else:
                 obj = CheckListVL(plaque_immatriculation=plaque, **vals)
                 db.add(obj); seen[plaque] = obj; r.created += 1
+            touched.add(plaque)
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 3, "message": str(e)})
     db.commit()
@@ -454,6 +479,8 @@ def _entretiens(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
     col_reste = _find_col(cols, "REST")
 
+    existing_map = {e.plaque_immatriculation: e for e in db.query(EntretienVehicule).all()}
+
     for idx, row in df.iterrows():
         try:
             plaque = _cs(row[col_mat]) if col_mat else None
@@ -470,12 +497,15 @@ def _entretiens(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 paliers=paliers,
                 reste=_cf(row[col_reste]) if col_reste and not pd.isna(row.get(col_reste, float("nan"))) else None,
             )
-            existing = db.query(EntretienVehicule).filter_by(plaque_immatriculation=plaque).first()
+            existing = existing_map.get(plaque)
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(EntretienVehicule(plaque_immatriculation=plaque, **vals)); r.created += 1
+                new_e = EntretienVehicule(plaque_immatriculation=plaque, **vals)
+                db.add(new_e)
+                existing_map[plaque] = new_e
+                r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 4, "message": str(e)})
     db.commit()
@@ -527,6 +557,8 @@ def _entretiens_bis(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
     col_reste = _find_col(cols, "REST")
 
+    existing_map = {e.plaque_immatriculation: e for e in db.query(EntretienBis).all()}
+
     for idx, row in df.iterrows():
         try:
             plaque = _cs(row[col_mat]) if col_mat else None
@@ -546,12 +578,15 @@ def _entretiens_bis(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 paliers=paliers,
                 reste=_cf(row[col_reste]) if col_reste and not pd.isna(row.get(col_reste, float("nan"))) else None,
             )
-            existing = db.query(EntretienBis).filter_by(plaque_immatriculation=plaque).first()
+            existing = existing_map.get(plaque)
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(EntretienBis(plaque_immatriculation=plaque, **vals)); r.created += 1
+                new_e = EntretienBis(plaque_immatriculation=plaque, **vals)
+                db.add(new_e)
+                existing_map[plaque] = new_e
+                r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 4, "message": str(e)})
     db.commit()
@@ -580,6 +615,11 @@ def _pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
     if not col_imma:
         r.skipped = True; r.skip_reason = "Colonne IMMA introuvable"; return r
 
+    existing_map = {
+        (p.immatriculation, p.date, p.nature_panne): p
+        for p in db.query(SuiviPanne).all()
+    }
+
     for idx, row in df.iterrows():
         try:
             imma = _cs(row[col_imma])
@@ -599,14 +639,16 @@ def _pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 immobilisation_jrs=int(immo_raw) if immo_raw is not None else None,
                 commentaire=_cs(row[col_com]) if col_com else None,
             )
-            existing = db.query(SuiviPanne).filter_by(
-                immatriculation=imma, date=date_val, nature_panne=nature,
-            ).first()
+            key = (imma, date_val, nature)
+            existing = existing_map.get(key)
             if existing:
                 for k, v in vals.items(): setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(SuiviPanne(**vals)); r.created += 1
+                new_p = SuiviPanne(**vals)
+                db.add(new_p)
+                existing_map[key] = new_p
+                r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
     db.commit()
@@ -651,6 +693,11 @@ def _sinistres(xls: pd.ExcelFile, db: Session) -> SectionResult:
     if not col_mat:
         r.skipped = True; r.skip_reason = "Colonne MATRICULE introuvable"; return r
 
+    existing_map = {
+        (s.matricule, s.date_declaration, s.circonstances): s
+        for s in db.query(SuiviSinistre).all()
+    }
+
     for idx, row in df.iterrows():
         try:
             matricule = _cs(row[col_mat])
@@ -673,17 +720,16 @@ def _sinistres(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 observations=_cs(row[col_obs]) if col_obs else None,
                 montant_indemnite=_cf(row[col_montant]) if col_montant else None,
             )
-            existing = db.query(SuiviSinistre).filter_by(
-                matricule=matricule,
-                date_declaration=vals["date_declaration"],
-                circonstances=vals["circonstances"],
-            ).first()
+            key = (matricule, vals["date_declaration"], vals["circonstances"])
+            existing = existing_map.get(key)
             if existing:
                 for k, v in vals.items():
                     setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(SuiviSinistre(**vals))
+                new_s = SuiviSinistre(**vals)
+                db.add(new_s)
+                existing_map[key] = new_s
                 r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
@@ -703,6 +749,10 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
     current_fournisseur = None
     col_map: dict[str, int] = {}
+    existing_map = {
+        (p.immatriculation, p.fournisseur): p
+        for p in db.query(Pneumatique).all()
+    }
 
     def gs(v) -> str:
         if pd.isna(v): return ""
@@ -793,14 +843,16 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 date_prevue=gd_idx(row.values, col_map.get("date_prevue")),
                 commentaire=get_s("commentaire"),
             )
-            existing = db.query(Pneumatique).filter_by(
-                immatriculation=imma, fournisseur=current_fournisseur
-            ).first()
+            key = (imma, current_fournisseur)
+            existing = existing_map.get(key)
             if existing:
                 for k, v in values.items(): setattr(existing, k, v)
                 r.updated += 1
             else:
-                db.add(Pneumatique(**values)); r.created += 1
+                new_p = Pneumatique(**values)
+                db.add(new_p)
+                existing_map[key] = new_p
+                r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 1, "message": str(e)})
 
