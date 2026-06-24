@@ -30,6 +30,21 @@ print("→ Création des tables...")
 Base.metadata.create_all(bind=engine)
 print("✓ Tables prêtes.")
 
+print("→ Vérification des colonnes additionnelles...")
+with engine.begin() as conn:
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE vehicules
+            ADD COLUMN IF NOT EXISTS marque VARCHAR(100),
+            ADD COLUMN IF NOT EXISTS annee INTEGER,
+            ADD COLUMN IF NOT EXISTS statut VARCHAR(30),
+            ADD COLUMN IF NOT EXISTS chauffeur VARCHAR(150),
+            ADD COLUMN IF NOT EXISTS kilometrage INTEGER,
+            ADD COLUMN IF NOT EXISTS dernier_service DATE,
+            ADD COLUMN IF NOT EXISTS prochaine_vidange DATE,
+            ADD COLUMN IF NOT EXISTS localisation VARCHAR(150)
+    """))
+print("✓ Colonnes à jour.")
+
 db = SessionLocal()
 try:
     if not db.query(User).first():

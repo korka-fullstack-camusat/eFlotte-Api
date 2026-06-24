@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 from pydantic import BaseModel
 
 
@@ -17,6 +17,14 @@ class VehiculeBase(BaseModel):
     trousse_secours: str | None = None
     peage: str | None = None
     carte_carburant: str | None = None
+    marque: str | None = None
+    annee: int | None = None
+    statut: str | None = None
+    chauffeur: str | None = None
+    kilometrage: int | None = None
+    dernier_service: date | None = None
+    prochaine_vidange: date | None = None
+    localisation: str | None = None
 
 
 class VehiculeCreate(VehiculeBase):
@@ -38,6 +46,14 @@ class VehiculeUpdate(BaseModel):
     trousse_secours: str | None = None
     peage: str | None = None
     carte_carburant: str | None = None
+    marque: str | None = None
+    annee: int | None = None
+    statut: str | None = None
+    chauffeur: str | None = None
+    kilometrage: int | None = None
+    dernier_service: date | None = None
+    prochaine_vidange: date | None = None
+    localisation: str | None = None
 
 
 class VehiculeOut(VehiculeBase):
