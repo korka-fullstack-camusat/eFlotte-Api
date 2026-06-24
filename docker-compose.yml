@@ -1,22 +1,6 @@
 name: eflotte
 
 services:
-  db:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: eflotte
-      POSTGRES_USER: flotte_user
-      POSTGRES_PASSWORD: FlottePass2025
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5435:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flotte_user -d eflotte"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   web:
     build: .
     command: >
@@ -34,13 +18,7 @@ services:
       - .:/app
     ports:
       - "8050:8050"
-    depends_on:
-      db:
-        condition: service_healthy
     env_file:
       - .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-volumes:
-  pgdata:
