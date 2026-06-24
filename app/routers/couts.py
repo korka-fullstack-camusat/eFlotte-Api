@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models.user import User
 from ..models.cout_flotte import CoutFlotte
+from ..models.vehicule import Vehicule
 from ..schemas.cout_flotte import (
     CoutFlotteOut, CoutFlotteCreate, CoutFlotteUpdate, CoutFlottePage, ImportCoutsResult, KpiCouts,
     EvolutionPoint, RepartitionPoint, VehiculeCoutPoint, FiltresCouts, PivotPoint, PivotResult,
@@ -232,6 +233,39 @@ def couts_par_vehicule(
         func.coalesce(func.sum(CoutFlotte.valeur), 0).label("total"),
     ).filter(CoutFlotte.type_cout == type_cout.upper())
     q = _apply_filters(q, annee, mois, plaque, type_vehicule, fournisseur, type_location)
+    q = q.group_by(CoutFlotte.plaque_immatriculation).order_by(func.sum(CoutFlotte.valeur).desc()).limit(limit)
+    return [
+        VehiculeCoutPoint(
+            plaque_immatriculation=r.plaque_immatriculation,
+            fournisseur=r.fournisseur,
+            type_vehicule=r.type_vehicule,
+            total=float(r.total),
+        )
+        for r in q.all()
+    ]
+
+
+@router.get("/top-carburant", response_model=list[VehiculeCoutPoint])
+def top_carburant(
+    type_carburant: str = Query(..., description="ESSENCE ou GASOIL"),
+    annee: int | None = Query(None),
+    mois: date | None = Query(None),
+    limit: int = Query(10, le=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    q = (
+        db.query(
+            CoutFlotte.plaque_immatriculation,
+            func.max(CoutFlotte.fournisseur).label("fournisseur"),
+            func.max(CoutFlotte.type_vehicule).label("type_vehicule"),
+            func.coalesce(func.sum(CoutFlotte.valeur), 0).label("total"),
+        )
+        .join(Vehicule, Vehicule.plaque_immatriculation == CoutFlotte.plaque_immatriculation)
+        .filter(CoutFlotte.type_cout == "CARBURANT")
+        .filter(func.upper(Vehicule.type_carburant) == type_carburant.upper())
+    )
+    q = _apply_filters(q, annee, mois)
     q = q.group_by(CoutFlotte.plaque_immatriculation).order_by(func.sum(CoutFlotte.valeur).desc()).limit(limit)
     return [
         VehiculeCoutPoint(

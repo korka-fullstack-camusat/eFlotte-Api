@@ -25,6 +25,7 @@ class Vehicule(Base):
     marque                = Column(String(100), nullable=True)
     annee                 = Column(Integer, nullable=True)
     statut                = Column(String(30), nullable=True)   # EN_SERVICE | EN_MAINTENANCE | IMMOBILISE
+    type_carburant        = Column(String(20), nullable=True)   # ESSENCE | GASOIL
     chauffeur             = Column(String(150), nullable=True)
     kilometrage           = Column(Integer, nullable=True)
     dernier_service       = Column(Date, nullable=True)

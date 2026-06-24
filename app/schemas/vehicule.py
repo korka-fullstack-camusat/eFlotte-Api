@@ -20,6 +20,7 @@ class VehiculeBase(BaseModel):
     marque: str | None = None
     annee: int | None = None
     statut: str | None = None
+    type_carburant: str | None = None
     chauffeur: str | None = None
     kilometrage: int | None = None
     dernier_service: date | None = None
@@ -49,6 +50,7 @@ class VehiculeUpdate(BaseModel):
     marque: str | None = None
     annee: int | None = None
     statut: str | None = None
+    type_carburant: str | None = None
     chauffeur: str | None = None
     kilometrage: int | None = None
     dernier_service: date | None = None

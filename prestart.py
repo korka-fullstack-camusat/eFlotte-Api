@@ -37,6 +37,7 @@ with engine.begin() as conn:
             ADD COLUMN IF NOT EXISTS marque VARCHAR(100),
             ADD COLUMN IF NOT EXISTS annee INTEGER,
             ADD COLUMN IF NOT EXISTS statut VARCHAR(30),
+            ADD COLUMN IF NOT EXISTS type_carburant VARCHAR(20),
             ADD COLUMN IF NOT EXISTS chauffeur VARCHAR(150),
             ADD COLUMN IF NOT EXISTS kilometrage INTEGER,
             ADD COLUMN IF NOT EXISTS dernier_service DATE,
