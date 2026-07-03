@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from ..database import get_db
 from ..models.user import User
 from ..models.vehicule import Vehicule
@@ -7,6 +8,41 @@ from ..schemas.vehicule import VehiculeOut, VehiculeCreate, VehiculeUpdate
 from ..services.auth_service import get_current_user, require_editor
 
 router = APIRouter(prefix="/api/vehicules", tags=["Flotte — Véhicules"])
+
+
+def _norm(val: str | None) -> str:
+    """Normalise un statut en casse flexible → EN_SERVICE / EN_MAINTENANCE / IMMOBILISE."""
+    import unicodedata
+    if not val:
+        return ""
+    s = unicodedata.normalize("NFD", val.strip())
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    return s.upper().replace(" ", "_").replace("-", "_")
+
+
+@router.get("/stats")
+def stats_vehicules(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    all_vehicules = db.query(Vehicule).all()
+    total = len(all_vehicules)
+
+    en_service = sum(1 for v in all_vehicules if _norm(v.statut) == "EN_SERVICE")
+    en_maintenance = sum(1 for v in all_vehicules if _norm(v.statut) == "EN_MAINTENANCE")
+    immobilises = sum(1 for v in all_vehicules if _norm(v.statut).startswith("IMMOBILISE"))
+    taux = round((en_service / total) * 100) if total > 0 else 0
+
+    # Répartition par type de carburant
+    essence = sum(1 for v in all_vehicules if (v.type_carburant or "").upper() in ("ESSENCE",))
+    gasoil  = sum(1 for v in all_vehicules if (v.type_carburant or "").upper() in ("GASOIL", "GAZOIL"))
+
+    return {
+        "total": total,
+        "en_service": en_service,
+        "en_maintenance": en_maintenance,
+        "immobilises": immobilises,
+        "taux_disponibilite": taux,
+        "essence": essence,
+        "gasoil": gasoil,
+    }
 
 
 @router.get("", response_model=list[VehiculeOut])
