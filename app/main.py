@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from .routers import auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur, suivi_devis, checklists_vl, suivi_pannes, pneumatiques, import_global, suivi_sinistres
+from .routers import auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur, suivi_devis, checklists_vl, suivi_pannes, pneumatiques, import_global, suivi_sinistres, carburant
 
 app = FastAPI(
     title="eFlotte — Camusat Sénégal",
@@ -31,6 +31,7 @@ app.include_router(suivi_pannes.router)
 app.include_router(pneumatiques.router)
 app.include_router(import_global.router)
 app.include_router(suivi_sinistres.router)
+app.include_router(carburant.router)
 
 
 @app.get("/")

@@ -8,7 +8,7 @@ from app.database import Base, engine, SessionLocal
 from app.models import (  # noqa: F401 — tous importés pour Base.metadata.create_all()
     User, Vehicule, CoutFlotte, EntretienVehicule, EntretienBis,
     MissionChauffeur, SuiviDevis, CheckListVL, SuiviPanne,
-    Pneumatique, SuiviSinistre, ImportGlobalLog,
+    Pneumatique, SuiviSinistre, ImportGlobalLog, Carburant,
 )
 from app.services.auth_service import hash_password
 

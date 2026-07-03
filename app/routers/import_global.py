@@ -23,6 +23,7 @@ from ..models.entretien_bis import EntretienBis
 from ..models.suivi_panne import SuiviPanne
 from ..models.pneumatique import Pneumatique
 from ..models.suivi_sinistre import SuiviSinistre
+from ..models.carburant import Carburant
 from ..services.auth_service import get_current_user, require_editor
 
 router = APIRouter(prefix="/api/import-global", tags=["Import global"])
@@ -53,6 +54,7 @@ class ImportGlobalResult(BaseModel):
     entretiens_bis: SectionResult
     pannes: SectionResult
     pneumatiques: SectionResult
+    carburant: SectionResult = SectionResult(skipped=True, skip_reason="Feuille CARBURANT non trouvée")
     sinistres: SectionResult = SectionResult(skipped=True, skip_reason="Fichier sinistres non fourni")
 
 
@@ -860,6 +862,73 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
     return r
 
 
+def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
+    r = SectionResult()
+    sheet = next((s for s in xls.sheet_names if "CARBURANT" in s.strip().upper()), None)
+    if not sheet:
+        r.skipped = True; r.skip_reason = "Feuille CARBURANT introuvable"; return r
+
+    try:
+        df = xls.parse(sheet, header=0)
+        df.columns = [str(c).strip() for c in df.columns]
+    except Exception as e:
+        r.skipped = True; r.skip_reason = str(e); return r
+
+    # Colonne type carburant sans entête (Unnamed: 5 typiquement)
+    type_col = next(
+        (c for c in df.columns if "Unnamed" in c or c.upper() in ("TYPE", "CARBURANT", "TYPE CARBURANT")),
+        None,
+    )
+
+    existing_map: dict[str, Carburant] = {c.matricule: c for c in db.query(Carburant).all()}
+
+    for idx, row in df.iterrows():
+        try:
+            matr = _cs(row.get("Matricule"))
+            if not matr:
+                continue
+            if any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
+                continue
+
+            type_carb = None
+            if type_col:
+                raw = _cs(row.get(type_col))
+                if raw and raw.upper() in ("GAZOIL", "ESSENCE"):
+                    type_carb = raw.upper()
+
+            vals = dict(
+                matricule       = matr,
+                quantite_totale = _cf(row.get("QuantiteTotale")),
+                montant_total   = _cf(row.get("MontantTotal")),
+                mt_ht           = _cf(row.get("Mt HT")),
+                prix_unitaire   = _cf(row.get("PrixUnitaire")),
+                type_carburant  = type_carb,
+                distance_totale = _cf(row.get("DistanceTotale")),
+                distance_gps    = _cf(row.get("Distance GPS")),
+                car_group       = _cs(row.get("CarGroup")),
+                dernier_plein   = _cd(row.get("DernierPlein")),
+                driver_name     = _cs(row.get("DriverName")),
+                nom_chauffeur   = _cs(row.get("Nom de chauffeur")),
+                code_projet     = _cs(row.get("CodeProjet")),
+                num_carte       = _cs(row.get("NumCarte")),
+            )
+            existing = existing_map.get(matr)
+            if existing:
+                for k, v in vals.items():
+                    setattr(existing, k, v)
+                r.updated += 1
+            else:
+                new_c = Carburant(**vals)
+                db.add(new_c)
+                existing_map[matr] = new_c
+                r.created += 1
+        except Exception as e:
+            r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
+
+    db.commit()
+    return r
+
+
 # ── endpoints ────────────────────────────────────────────────────────────────
 
 @router.post("", response_model=ImportGlobalResult)
@@ -894,6 +963,7 @@ async def import_global(
         entretiens_bis = _entretiens_bis(xls, db),
         pannes         = _pannes(xls, db),
         pneumatiques   = _pneumatiques(xls, db),
+        carburant      = _carburant(xls, db),
         sinistres      = sin_result,
     )
 
@@ -957,6 +1027,7 @@ def clear_all_data(
         (SuiviPanne,       "suivi_pannes"),
         (Pneumatique,      "pneumatiques"),
         (SuiviSinistre,    "suivi_sinistres"),
+        (Carburant,        "carburant"),
         (Vehicule,         "vehicules"),
         (ImportGlobalLog,  "import_logs"),
     ]:
