@@ -11,9 +11,11 @@ from .pneumatique import Pneumatique
 from .suivi_sinistre import SuiviSinistre
 from .import_global_log import ImportGlobalLog
 from .carburant import Carburant
+from .recap_panne import RecapPanneVehicule
 
 __all__ = [
     "User", "Vehicule", "CoutFlotte", "EntretienVehicule", "EntretienBis",
     "MissionChauffeur", "SuiviDevis", "CheckListVL", "SuiviPanne",
     "Pneumatique", "SuiviSinistre", "ImportGlobalLog", "Carburant",
+    "RecapPanneVehicule",
 ]

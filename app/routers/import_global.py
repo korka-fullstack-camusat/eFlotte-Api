@@ -24,6 +24,7 @@ from ..models.suivi_panne import SuiviPanne
 from ..models.pneumatique import Pneumatique
 from ..models.suivi_sinistre import SuiviSinistre
 from ..models.carburant import Carburant
+from ..models.recap_panne import RecapPanneVehicule
 from ..services.auth_service import get_current_user, require_editor
 
 router = APIRouter(prefix="/api/import-global", tags=["Import global"])
@@ -55,6 +56,7 @@ class ImportGlobalResult(BaseModel):
     pannes: SectionResult
     pneumatiques: SectionResult
     carburant: SectionResult = SectionResult(skipped=True, skip_reason="Feuille CARBURANT non trouvée")
+    recap_pannes: SectionResult = SectionResult(skipped=True, skip_reason="Feuille RECAP DES PANNES non trouvée")
     sinistres: SectionResult = SectionResult(skipped=True, skip_reason="Fichier sinistres non fourni")
 
 
@@ -137,18 +139,25 @@ def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
         r.skipped = True; r.skip_reason = "Colonne plaque introuvable"; return r
 
     cols = list(df.columns)
-    col_map = {
+    col_str_map = {
         "type_location":   _find_col(cols, "TYPE DE LOCATION", "TYPE DE LOCAT"),
         "fournisseur":     _find_col(cols, "FOURNISSEUR"),
         "type_vehicule":   _find_col(cols, "TYPE VEHICULE", "TYPE VÉ"),
         "n_chassis":       _find_col(cols, "CHASSIS"),
+        "marque":          _find_col(cols, "BRAND", "MARQUE"),
         "modele":          _find_col(cols, "MODEL"),
         "couleur":         _find_col(cols, "COULEUR"),
         "autocollant":     _find_col(cols, "AUTOCOL"),
         "extincteurs":     _find_col(cols, "EXTINC"),
         "trousse_secours": _find_col(cols, "TROUSSE"),
         "carte_carburant": _find_col(cols, "CARTE", "CARB"),
+        "statut":          _find_col(cols, "STATUT"),
+        "type_carburant":  _find_col(cols, "FUEL", "TYPE CARB", "CARBURANT"),
+        "chauffeur":       _find_col(cols, "LABEL", "CHAUFFEUR"),
+        "localisation":    _find_col(cols, "LOCALISA", "SITE"),
     }
+    col_annee = _find_col(cols, "ANNEE", "YEAR")
+    col_km    = _find_col(cols, "KILOMETRAGE", "KM", "ODOME")
 
     existing_map = {v.plaque_immatriculation: v for v in db.query(Vehicule).all()}
 
@@ -157,8 +166,18 @@ def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
             plaque = _cs(row[col_plaque])
             if not plaque:
                 continue
-            vals = {k: _cs(row[v]) if v and not pd.isna(row.get(v, float("nan"))) else None
-                    for k, v in col_map.items() if v}
+            vals: dict = {k: _cs(row[c]) if c and not pd.isna(row.get(c, float("nan"))) else None
+                          for k, c in col_str_map.items() if c}
+            if col_annee:
+                raw_an = row.get(col_annee)
+                if not pd.isna(raw_an):
+                    try: vals["annee"] = int(float(raw_an))
+                    except: pass
+            if col_km:
+                raw_km = row.get(col_km)
+                if not pd.isna(raw_km):
+                    try: vals["kilometrage"] = int(float(raw_km))
+                    except: pass
             existing = existing_map.get(plaque)
             if existing:
                 for k, v in vals.items():
@@ -929,6 +948,134 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
     return r
 
 
+def _recap_pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
+    """Parse la feuille 'RECAP DES PANNES' : statuts mensuels par véhicule."""
+    r = SectionResult()
+    sheet = next(
+        (s for s in xls.sheet_names if "RECAP" in s.upper() and "PANNE" in s.upper()),
+        None,
+    )
+    if not sheet:
+        r.skipped = True; r.skip_reason = "Feuille 'RECAP DES PANNES' introuvable"; return r
+
+    # Lire avec header=1 (ligne 2 contient les vrais en-têtes dans ce fichier)
+    df = None
+    for h in range(0, 5):
+        try:
+            candidate = xls.parse(sheet, header=h)
+            candidate.columns = [" ".join(str(c).split()) for c in candidate.columns]
+            cols = list(candidate.columns)
+            # La bonne ligne header contient "REG" ou "BRAND" ou "MODEL"
+            if any(k in str(c).upper() for c in cols for k in ("REG", "BRAND", "MODEL")):
+                df = candidate
+                break
+        except Exception:
+            continue
+
+    if df is None:
+        r.skipped = True; r.skip_reason = "Impossible de détecter la ligne d'en-tête RECAP DES PANNES"; return r
+
+    cols = list(df.columns)
+    col_brand  = _find_col(cols, "BRAND")
+    col_model  = _find_col(cols, "MODEL")
+    col_reg    = _find_col(cols, "REG", "PLAQUE", "IMMA")
+    col_label  = _find_col(cols, "LABEL")
+    col_fuel   = _find_col(cols, "FUEL", "CARBURANT")
+    col_group  = _find_col(cols, "CAR GROUP", "GROUP")
+
+    if not col_reg:
+        r.skipped = True; r.skip_reason = "Colonne Reg. N° introuvable dans RECAP DES PANNES"; return r
+
+    # Colonnes fixes à exclure pour trouver les colonnes mensuelles
+    fixed = {col_brand, col_model, col_reg, col_label, col_fuel, col_group, None}
+
+    # Correspondance mois français abrégés → numéro de mois
+    MOIS_MAP = {
+        "JANV": 1, "FEVR": 2, "FEVRIER": 2, "MARS": 3, "AVRI": 4, "AVRIL": 4,
+        "MAI": 5, "JUIN": 6, "JUIL": 7, "AOUT": 8, "SEPT": 9,
+        "OCTO": 10, "NOVE": 11, "DECE": 12,
+    }
+
+    def _parse_mois_col(col_name: str) -> str | None:
+        """Convertit 'janv-26', 'févr-26', 'mars-26' en 'YYYY-MM'."""
+        import re, unicodedata
+        s = unicodedata.normalize("NFD", str(col_name).strip())
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn").upper()
+        # Cherche pattern MOIS-AA ou MOIS_AA ou MOISAA
+        m = re.match(r"([A-Z]+)[-_\s](\d{2,4})$", s)
+        if not m:
+            return None
+        mois_str, annee_str = m.group(1), m.group(2)
+        mois_num = next((v for k, v in MOIS_MAP.items() if mois_str.startswith(k)), None)
+        if not mois_num:
+            return None
+        annee = int(annee_str) + 2000 if len(annee_str) == 2 else int(annee_str)
+        return f"{annee}-{mois_num:02d}"
+
+    # Identifier les colonnes mensuelles
+    mois_cols: dict[str, str] = {}  # col_name → "YYYY-MM"
+    for c in cols:
+        if c in fixed:
+            continue
+        iso = _parse_mois_col(str(c))
+        if iso:
+            mois_cols[c] = iso
+
+    if not mois_cols:
+        r.skipped = True; r.skip_reason = "Aucune colonne mensuelle détectée (attendu: janv-26, févr-26…)"; return r
+
+    existing_map: dict[str, RecapPanneVehicule] = {
+        v.plaque_immatriculation: v for v in db.query(RecapPanneVehicule).all()
+    }
+
+    for idx, row in df.iterrows():
+        try:
+            plaque = _cs(row.get(col_reg))
+            if not plaque:
+                continue
+            # Ignorer lignes de total
+            if any(kw in plaque.upper() for kw in ("TOTAL", "SOUS", "GRAND")):
+                continue
+
+            statuts = {iso: (_cs(row.get(col)) or None) for col, iso in mois_cols.items()}
+            vals = dict(
+                brand=_cs(row.get(col_brand)) if col_brand else None,
+                model=_cs(row.get(col_model)) if col_model else None,
+                label=_cs(row.get(col_label)) if col_label else None,
+                fuel_type=_cs(row.get(col_fuel)) if col_fuel else None,
+                car_group=_cs(row.get(col_group)) if col_group else None,
+                statuts_mensuels=statuts,
+            )
+            existing = existing_map.get(plaque)
+            if existing:
+                for k, v in vals.items():
+                    setattr(existing, k, v)
+                r.updated += 1
+            else:
+                new_v = RecapPanneVehicule(plaque_immatriculation=plaque, **vals)
+                db.add(new_v)
+                existing_map[plaque] = new_v
+                r.created += 1
+        except Exception as e:
+            r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
+
+    db.commit()
+
+    # Mettre à jour vehicule.statut avec le statut du mois le plus récent
+    vehicule_map: dict[str, Vehicule] = {v.plaque_immatriculation: v for v in db.query(Vehicule).all()}
+    for recap in db.query(RecapPanneVehicule).all():
+        veh = vehicule_map.get(recap.plaque_immatriculation)
+        if not veh or not recap.statuts_mensuels:
+            continue
+        dernier_mois = max(recap.statuts_mensuels.keys())
+        statut_actuel = recap.statuts_mensuels[dernier_mois]
+        if statut_actuel:
+            veh.statut = statut_actuel
+    db.commit()
+
+    return r
+
+
 # ── endpoints ────────────────────────────────────────────────────────────────
 
 @router.post("", response_model=ImportGlobalResult)
@@ -964,6 +1111,7 @@ async def import_global(
         pannes         = _pannes(xls, db),
         pneumatiques   = _pneumatiques(xls, db),
         carburant      = _carburant(xls, db),
+        recap_pannes   = _recap_pannes(xls, db),
         sinistres      = sin_result,
     )
 
@@ -1028,6 +1176,7 @@ def clear_all_data(
         (Pneumatique,      "pneumatiques"),
         (SuiviSinistre,    "suivi_sinistres"),
         (Carburant,        "carburant"),
+        (RecapPanneVehicule, "recap_pannes"),
         (Vehicule,         "vehicules"),
         (ImportGlobalLog,  "import_logs"),
     ]:
