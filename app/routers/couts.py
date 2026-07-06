@@ -10,6 +10,7 @@ from ..database import get_db
 from ..models.user import User
 from ..models.cout_flotte import CoutFlotte
 from ..models.vehicule import Vehicule
+from ..models.carburant import Carburant
 from ..schemas.cout_flotte import (
     CoutFlotteOut, CoutFlotteCreate, CoutFlotteUpdate, CoutFlottePage, ImportCoutsResult, KpiCouts,
     EvolutionPoint, RepartitionPoint, VehiculeCoutPoint, FiltresCouts, PivotPoint, PivotResult,
@@ -247,31 +248,40 @@ def couts_par_vehicule(
 
 @router.get("/top-carburant", response_model=list[VehiculeCoutPoint])
 def top_carburant(
-    type_carburant: str = Query(..., description="ESSENCE ou GASOIL"),
+    type_carburant: str = Query(..., description="ESSENCE ou GAZOIL"),
     annee: int | None = Query(None),
-    mois: date | None = Query(None),
+    mois: str | None = Query(None),
     limit: int = Query(10, le=100),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    # Normalise : "GASOIL" accepté en plus de "GAZOIL"
+    tc = type_carburant.upper().replace("GASOIL", "GAZOIL")
+
     q = (
         db.query(
-            CoutFlotte.plaque_immatriculation,
-            func.max(CoutFlotte.fournisseur).label("fournisseur"),
-            func.max(CoutFlotte.type_vehicule).label("type_vehicule"),
-            func.coalesce(func.sum(CoutFlotte.valeur), 0).label("total"),
+            Carburant.matricule.label("plaque_immatriculation"),
+            func.coalesce(func.sum(Carburant.montant_total), 0).label("total"),
         )
-        .join(Vehicule, Vehicule.plaque_immatriculation == CoutFlotte.plaque_immatriculation)
-        .filter(CoutFlotte.type_cout == "CARBURANT")
-        .filter(func.upper(Vehicule.type_carburant) == type_carburant.upper())
+        .filter(func.upper(Carburant.type_carburant) == tc)
     )
-    q = _apply_filters(q, annee, mois)
-    q = q.group_by(CoutFlotte.plaque_immatriculation).order_by(func.sum(CoutFlotte.valeur).desc()).limit(limit)
+    if annee:
+        q = q.filter(extract("year", Carburant.dernier_plein) == annee)
+    if mois:
+        try:
+            parts = mois.split("-")
+            q = q.filter(
+                extract("year",  Carburant.dernier_plein) == int(parts[0]),
+                extract("month", Carburant.dernier_plein) == int(parts[1]),
+            )
+        except Exception:
+            pass
+    q = q.group_by(Carburant.matricule).order_by(func.sum(Carburant.montant_total).desc()).limit(limit)
     return [
         VehiculeCoutPoint(
             plaque_immatriculation=r.plaque_immatriculation,
-            fournisseur=r.fournisseur,
-            type_vehicule=r.type_vehicule,
+            fournisseur=None,
+            type_vehicule=None,
             total=float(r.total),
         )
         for r in q.all()
