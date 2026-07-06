@@ -1100,18 +1100,25 @@ async def import_global(
         except Exception as e:
             sin_result = SectionResult(skipped=True, skip_reason=f"Fichier sinistres illisible : {e}")
 
+    def _safe(fn, *args) -> SectionResult:
+        try:
+            return fn(*args)
+        except Exception as exc:
+            db.rollback()
+            return SectionResult(skipped=True, skip_reason=f"Erreur : {exc}")
+
     result = ImportGlobalResult(
-        vehicules      = _vehicules(xls, db),
-        couts          = _couts(xls, db),
-        missions       = _missions(xls, db),
-        devis          = _devis(xls, db),
-        checklists     = _checklists(xls, db),
-        entretiens     = _entretiens(xls, db),
-        entretiens_bis = _entretiens_bis(xls, db),
-        pannes         = _pannes(xls, db),
-        pneumatiques   = _pneumatiques(xls, db),
-        carburant      = _carburant(xls, db),
-        recap_pannes   = _recap_pannes(xls, db),
+        vehicules      = _safe(_vehicules,      xls, db),
+        couts          = _safe(_couts,          xls, db),
+        missions       = _safe(_missions,       xls, db),
+        devis          = _safe(_devis,          xls, db),
+        checklists     = _safe(_checklists,     xls, db),
+        entretiens     = _safe(_entretiens,     xls, db),
+        entretiens_bis = _safe(_entretiens_bis, xls, db),
+        pannes         = _safe(_pannes,         xls, db),
+        pneumatiques   = _safe(_pneumatiques,   xls, db),
+        carburant      = _safe(_carburant,      xls, db),
+        recap_pannes   = _safe(_recap_pannes,   xls, db),
         sinistres      = sin_result,
     )
 
