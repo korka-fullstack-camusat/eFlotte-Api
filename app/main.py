@@ -1,24 +1,16 @@
-from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from .routers import auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur, suivi_devis, checklists_vl, suivi_pannes, pneumatiques, import_global, suivi_sinistres, carburant
-from .database import engine, Base
-from . import models  # noqa: F401 — enregistre tous les modèles avant create_all
-
-
-@asynccontextmanager
-async def lifespan(_: FastAPI):
-    # Crée les tables manquantes sans toucher aux tables existantes
-    Base.metadata.create_all(bind=engine)
-    yield
-
+from .routers import (
+    auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur,
+    suivi_devis, checklists_vl, suivi_pannes, pneumatiques,
+    import_global, suivi_sinistres, carburant,
+)
 
 app = FastAPI(
     title="eFlotte — Camusat Sénégal",
     description="Gestion de la flotte automobile — suivi global, coûts, entretiens, pannes",
     version="1.0.0",
-    lifespan=lifespan,
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
