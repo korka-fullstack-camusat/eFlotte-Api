@@ -44,6 +44,10 @@ with engine.begin() as conn:
             ADD COLUMN IF NOT EXISTS prochaine_vidange DATE,
             ADD COLUMN IF NOT EXISTS localisation VARCHAR(150)
     """))
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE carburant
+            ADD COLUMN IF NOT EXISTS mois INTEGER NOT NULL DEFAULT 1
+    """))
 print("✓ Colonnes à jour.")
 
 db = SessionLocal()

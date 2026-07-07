@@ -2,7 +2,7 @@ import io
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, extract
+from sqlalchemy import func
 
 from ..database import get_db
 from ..models.carburant import Carburant
@@ -57,6 +57,7 @@ def get_filtres(db: Session = Depends(get_db), _: User = Depends(get_current_use
 
 @router.get("", response_model=CarburantPage)
 def list_carburant(
+    mois:           int | None = Query(None, ge=1, le=12),
     matricule:      str | None = None,
     car_group:      str | None = None,
     type_carburant: str | None = None,
@@ -69,6 +70,8 @@ def list_carburant(
 ):
     q = db.query(Carburant)
 
+    if mois is not None:
+        q = q.filter(Carburant.mois == mois)
     if matricule:
         q = q.filter(Carburant.matricule == matricule)
     if car_group:
@@ -103,7 +106,7 @@ def stats_carburant(
     car_group:      str | None = None,
     type_carburant: str | None = None,
     annee:          int | None = Query(None),
-    mois:           str | None = Query(None),
+    mois:           int | None = Query(None, ge=1, le=12),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -112,14 +115,8 @@ def stats_carburant(
         q = q.filter(Carburant.car_group == car_group)
     if type_carburant:
         q = q.filter(func.upper(Carburant.type_carburant) == type_carburant.upper())
-    if mois:
-        parts = mois.split("-")
-        q = q.filter(
-            extract("year",  Carburant.dernier_plein) == int(parts[0]),
-            extract("month", Carburant.dernier_plein) == int(parts[1]),
-        )
-    elif annee:
-        q = q.filter(extract("year", Carburant.dernier_plein) == annee)
+    if mois is not None:
+        q = q.filter(Carburant.mois == mois)
 
     rows = q.all()
 
@@ -194,6 +191,7 @@ def update_carburant(
 @router.post("/import", response_model=ImportCarburantResult)
 async def import_carburant(
     file: UploadFile = File(...),
+    mois: int = Query(1, ge=1, le=12, description="Mois de l'import (1=Janvier … 12=Décembre)"),
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
@@ -210,19 +208,17 @@ async def import_carburant(
     if not sheet_name:
         raise HTTPException(400, "Feuille 'CARBURANT' introuvable dans le fichier")
 
-    # Lecture avec header=0, la colonne sans nom (type carburant) sera Unnamed: 5
     df = xls.parse(sheet_name, header=0)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Identifier la colonne type carburant (colonne sans entête entre PrixUnitaire et DistanceTotale)
     type_col = next(
         (c for c in df.columns if "Unnamed" in c or c.upper() in ("TYPE", "CARBURANT", "TYPE CARBURANT")),
         None,
     )
 
-    # Preload existing rows keyed by matricule (un enregistrement par véhicule/import)
-    existing_map: dict[str, Carburant] = {
-        r.matricule: r for r in db.query(Carburant).all()
+    # Clé unique = (matricule, mois) — un véhicule peut avoir un enregistrement par mois
+    existing_map: dict[tuple[str, int], Carburant] = {
+        (r.matricule, r.mois): r for r in db.query(Carburant).filter(Carburant.mois == mois).all()
     }
 
     created = 0
@@ -233,8 +229,6 @@ async def import_carburant(
         matr = _cs(row.get("Matricule"))
         if not matr:
             continue
-
-        # Ignorer les lignes de totaux / sous-totaux
         if any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
             continue
 
@@ -247,6 +241,7 @@ async def import_carburant(
         try:
             values = dict(
                 matricule       = matr,
+                mois            = mois,
                 quantite_totale = _cf(row.get("QuantiteTotale")),
                 montant_total   = _cf(row.get("MontantTotal")),
                 mt_ht           = _cf(row.get("Mt HT")),
@@ -262,7 +257,8 @@ async def import_carburant(
                 num_carte       = _cs(row.get("NumCarte")),
             )
 
-            existing = existing_map.get(matr)
+            key = (matr, mois)
+            existing = existing_map.get(key)
             if existing:
                 for k, v in values.items():
                     setattr(existing, k, v)
@@ -270,7 +266,7 @@ async def import_carburant(
             else:
                 new_r = Carburant(**values)
                 db.add(new_r)
-                existing_map[matr] = new_r
+                existing_map[key] = new_r
                 created += 1
 
         except Exception as e:

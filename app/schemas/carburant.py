@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 class CarburantBase(BaseModel):
     matricule:       str
+    mois:            int   = 1
     quantite_totale: float | None = None
     montant_total:   float | None = None
     mt_ht:           float | None = None

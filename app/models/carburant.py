@@ -7,6 +7,7 @@ class Carburant(Base):
 
     id              = Column(Integer, primary_key=True, index=True)
     matricule       = Column(String(50), nullable=False, index=True)
+    mois            = Column(Integer, nullable=False, default=1, index=True)  # 1=Jan … 12=Déc
     quantite_totale = Column(Float)
     montant_total   = Column(Float)
     mt_ht           = Column(Float)
