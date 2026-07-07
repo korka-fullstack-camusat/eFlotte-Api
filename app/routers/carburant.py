@@ -2,7 +2,7 @@ import io
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, extract
 
 from ..database import get_db
 from ..models.carburant import Carburant
@@ -102,6 +102,8 @@ def list_carburant(
 def stats_carburant(
     car_group:      str | None = None,
     type_carburant: str | None = None,
+    annee:          int | None = Query(None),
+    mois:           str | None = Query(None),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -110,6 +112,14 @@ def stats_carburant(
         q = q.filter(Carburant.car_group == car_group)
     if type_carburant:
         q = q.filter(func.upper(Carburant.type_carburant) == type_carburant.upper())
+    if mois:
+        parts = mois.split("-")
+        q = q.filter(
+            extract("year",  Carburant.dernier_plein) == int(parts[0]),
+            extract("month", Carburant.dernier_plein) == int(parts[1]),
+        )
+    elif annee:
+        q = q.filter(extract("year", Carburant.dernier_plein) == annee)
 
     rows = q.all()
 

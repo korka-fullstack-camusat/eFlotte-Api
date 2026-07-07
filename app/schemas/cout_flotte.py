@@ -76,6 +76,7 @@ class VehiculeCoutPoint(BaseModel):
 
 
 class FiltresCouts(BaseModel):
+    annees: list[int]
     mois: list[date]
     plaques: list[str]
     types_vehicule: list[str]

@@ -137,7 +137,9 @@ def filtres_couts(
     mois = sorted(
         {m for (m,) in db.query(CoutFlotte.mois).distinct().all() if m}
     )
+    annees = sorted({m.year for m in mois}) if mois else []
     return FiltresCouts(
+        annees=annees,
         mois=mois,
         plaques=distinct(CoutFlotte.plaque_immatriculation),
         types_vehicule=distinct(CoutFlotte.type_vehicule),
