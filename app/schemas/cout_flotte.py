@@ -82,6 +82,7 @@ class FiltresCouts(BaseModel):
     types_vehicule: list[str]
     fournisseurs: list[str]
     types_location: list[str]
+    types_cout: list[str] = []
 
 
 class PivotPoint(BaseModel):
