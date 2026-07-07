@@ -1093,64 +1093,93 @@ async def import_global(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_editor),
 ):
+    import gc
+
     content = await file.read()
+
+    # Validate file is readable (lightweight check — do not keep xls open)
     try:
-        xls = pd.ExcelFile(io.BytesIO(content))
+        _xls_check = pd.ExcelFile(io.BytesIO(content))
+        _ = _xls_check.sheet_names
+        del _xls_check
+        gc.collect()
     except Exception:
         raise HTTPException(400, "Fichier Excel illisible")
+
+    # Each parser gets a FRESH ExcelFile so only one openpyxl workbook
+    # lives in memory at a time, preventing OOM on Render free tier (512 MB).
+    # Savepoints are NOT used because parsers call db.commit() internally,
+    # which would release the savepoint before _safe() can commit it.
+    def _safe(fn) -> SectionResult:
+        xls = None
+        try:
+            xls = pd.ExcelFile(io.BytesIO(content))
+            return fn(xls, db)
+        except Exception as exc:
+            # Roll back any uncommitted work from this section only.
+            # Previous sections already committed, so rollback is safe.
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            return SectionResult(skipped=True, skip_reason=f"Erreur : {type(exc).__name__}: {exc}")
+        finally:
+            if xls is not None:
+                del xls
+            gc.collect()
 
     sin_result = SectionResult(skipped=True, skip_reason="Fichier sinistres non fourni")
     if sinistres_file:
         sin_content = await sinistres_file.read()
+        xls_sin = None
         try:
             xls_sin = pd.ExcelFile(io.BytesIO(sin_content))
             sin_result = _sinistres(xls_sin, db)
         except Exception as e:
             sin_result = SectionResult(skipped=True, skip_reason=f"Fichier sinistres illisible : {e}")
-
-    def _safe(fn, *args) -> SectionResult:
-        try:
-            sp = db.begin_nested()   # savepoint — isole la section
-            result_s = fn(*args)
-            sp.commit()
-            return result_s
-        except Exception as exc:
             try:
-                sp.rollback()        # annule uniquement cette section
+                db.rollback()
             except Exception:
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-            return SectionResult(skipped=True, skip_reason=f"Erreur : {exc}")
+                pass
+        finally:
+            if xls_sin is not None:
+                del xls_sin
+            gc.collect()
 
     result = ImportGlobalResult(
-        vehicules      = _safe(_vehicules,      xls, db),
-        couts          = _safe(_couts,          xls, db),
-        missions       = _safe(_missions,       xls, db),
-        devis          = _safe(_devis,          xls, db),
-        checklists     = _safe(_checklists,     xls, db),
-        entretiens     = _safe(_entretiens,     xls, db),
-        entretiens_bis = _safe(_entretiens_bis, xls, db),
-        pannes         = _safe(_pannes,         xls, db),
-        pneumatiques   = _safe(_pneumatiques,   xls, db),
-        carburant      = _safe(_carburant,      xls, db),
-        recap_pannes   = _safe(_recap_pannes,   xls, db),
+        vehicules      = _safe(_vehicules),
+        couts          = _safe(_couts),
+        missions       = _safe(_missions),
+        devis          = _safe(_devis),
+        checklists     = _safe(_checklists),
+        entretiens     = _safe(_entretiens),
+        entretiens_bis = _safe(_entretiens_bis),
+        pannes         = _safe(_pannes),
+        pneumatiques   = _safe(_pneumatiques),
+        carburant      = _safe(_carburant),
+        recap_pannes   = _safe(_recap_pannes),
         sinistres      = sin_result,
     )
 
-    results_dict = result.model_dump()
-    sections = results_dict.values()
-    log = ImportGlobalLog(
-        username      = current_user.username if current_user else None,
-        filename      = file.filename,
-        results       = results_dict,
-        total_created = sum(s["created"] for s in sections),
-        total_updated = sum(s["updated"] for s in sections),
-        total_errors  = sum(len(s["errors"]) for s in sections),
-    )
-    db.add(log)
-    db.commit()
+    # Save import log — wrapped so a DB error here never fails the response
+    try:
+        results_dict = result.model_dump()
+        sections = list(results_dict.values())
+        log = ImportGlobalLog(
+            username      = current_user.username if current_user else None,
+            filename      = file.filename,
+            results       = results_dict,
+            total_created = sum(s["created"] for s in sections),
+            total_updated = sum(s["updated"] for s in sections),
+            total_errors  = sum(len(s["errors"]) for s in sections),
+        )
+        db.add(log)
+        db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
     return result
 
