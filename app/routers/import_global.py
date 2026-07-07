@@ -950,6 +950,14 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
 def _recap_pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
     """Parse la feuille 'RECAP DES PANNES' : statuts mensuels par véhicule."""
+    from sqlalchemy import inspect as sa_inspect
+    try:
+        inspector = sa_inspect(db.get_bind())
+        if "recap_pannes_vehicules" not in inspector.get_table_names():
+            return SectionResult(skipped=True, skip_reason="Table recap_pannes_vehicules manquante — redéployez le backend")
+    except Exception:
+        pass  # si l'inspect échoue, on continue et laisse _safe gérer
+
     r = SectionResult()
     sheet = next(
         (s for s in xls.sheet_names if "RECAP" in s.upper() and "PANNE" in s.upper()),
@@ -1102,9 +1110,18 @@ async def import_global(
 
     def _safe(fn, *args) -> SectionResult:
         try:
-            return fn(*args)
+            sp = db.begin_nested()   # savepoint — isole la section
+            result_s = fn(*args)
+            sp.commit()
+            return result_s
         except Exception as exc:
-            db.rollback()
+            try:
+                sp.rollback()        # annule uniquement cette section
+            except Exception:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             return SectionResult(skipped=True, skip_reason=f"Erreur : {exc}")
 
     result = ImportGlobalResult(
