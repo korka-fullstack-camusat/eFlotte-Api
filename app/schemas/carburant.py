@@ -63,6 +63,7 @@ class CarburantUpdate(BaseModel):
 
 
 class ImportCarburantResult(BaseModel):
-    created: int
-    updated: int
-    errors:  list[dict]
+    created:      int
+    updated:      int
+    errors:       list[dict]
+    mois_detecte: int  # mois réellement utilisé (1–12), auto-détecté ou forcé

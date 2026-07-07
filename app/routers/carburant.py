@@ -186,6 +186,61 @@ def update_carburant(
     return item
 
 
+# ── Noms de mois pour la détection automatique ────────────────────────────────
+
+_MOIS_FR = {
+    "JANVIER": 1, "FEVRIER": 2, "FÉVRIER": 2, "MARS": 3, "AVRIL": 4,
+    "MAI": 5, "JUIN": 6, "JUILLET": 7, "AOUT": 8, "AOÛT": 8,
+    "SEPTEMBRE": 9, "OCTOBRE": 10, "NOVEMBRE": 11, "DECEMBRE": 12, "DÉCEMBRE": 12,
+    "JAN": 1, "FEV": 2, "FÉV": 2, "MAR": 3, "AVR": 4,
+    "JUI": 6, "JUL": 7, "AOU": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12, "DÉC": 12,
+}
+
+
+def _detect_mois(filename: str, xls: pd.ExcelFile, sheet_name: str) -> int | None:
+    """Essaie de détecter le mois depuis le nom de fichier ou la feuille Excel."""
+    import re
+
+    # 1. Cherche dans le nom du fichier
+    name_upper = filename.upper().replace("_", " ").replace("-", " ")
+    for token in re.split(r"[\s\.]+", name_upper):
+        if token in _MOIS_FR:
+            return _MOIS_FR[token]
+
+    # 2. Cherche dans le nom de la feuille
+    sheet_upper = sheet_name.upper().replace("_", " ").replace("-", " ")
+    for token in re.split(r"[\s\.]+", sheet_upper):
+        if token in _MOIS_FR:
+            return _MOIS_FR[token]
+
+    # 3. Cherche dans les 5 premières lignes des premières colonnes
+    try:
+        df_head = xls.parse(sheet_name, header=None, nrows=5)
+        for row in df_head.itertuples(index=False):
+            for cell in row:
+                if pd.isna(cell):
+                    continue
+                for token in re.split(r"[\s/\-_\.]+", str(cell).upper()):
+                    if token in _MOIS_FR:
+                        return _MOIS_FR[token]
+    except Exception:
+        pass
+
+    # 4. Cherche dans la colonne DernierPlein — mois le plus fréquent
+    try:
+        df_sample = xls.parse(sheet_name, header=0)
+        df_sample.columns = [str(c).strip() for c in df_sample.columns]
+        col = next((c for c in df_sample.columns if "DERNIER" in c.upper() or "PLEIN" in c.upper()), None)
+        if col:
+            dates = pd.to_datetime(df_sample[col], errors="coerce", dayfirst=True).dropna()
+            if not dates.empty:
+                return int(dates.dt.month.mode()[0])
+    except Exception:
+        pass
+
+    return None
+
+
 # ── Import Excel ───────────────────────────────────────────────────────────────
 
 @router.post("/import", response_model=ImportCarburantResult)
@@ -207,6 +262,11 @@ async def import_carburant(
     )
     if not sheet_name:
         raise HTTPException(400, "Feuille 'CARBURANT' introuvable dans le fichier")
+
+    # Auto-détection du mois depuis le fichier (priorité sur le paramètre par défaut)
+    detected = _detect_mois(file.filename or "", xls, sheet_name)
+    if detected:
+        mois = detected
 
     df = xls.parse(sheet_name, header=0)
     df.columns = [str(c).strip() for c in df.columns]
@@ -273,4 +333,4 @@ async def import_carburant(
             errors.append({"ligne": int(idx) + 2, "message": str(e)})
 
     db.commit()
-    return ImportCarburantResult(created=created, updated=updated, errors=errors)
+    return ImportCarburantResult(created=created, updated=updated, errors=errors, mois_detecte=mois)
