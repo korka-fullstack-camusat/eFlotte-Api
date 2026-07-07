@@ -616,7 +616,8 @@ def _entretiens_bis(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
 def _pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
     r = SectionResult()
-    df, err = _parse_sheet(xls, "PANNE")
+    # "SUIVI" + "PANNE" évite de matcher "RECAP DES PANNES" par erreur
+    df, err = _parse_sheet(xls, "SUIVI", "PANNE")
     if df is None:
         r.skipped = True; r.skip_reason = err; return r
 
