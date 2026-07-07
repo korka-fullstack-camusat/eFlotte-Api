@@ -128,24 +128,37 @@ def delete_cout(
 
 @router.get("/debug-carburant")
 def debug_carburant(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    """Diagnostic : montre les données disponibles pour le Top 10 Carburant."""
+    """Diagnostic complet : que contient la base pour le Top 10 Carburant ?"""
     cout_types = [t for (t,) in db.query(CoutFlotte.type_cout).distinct().all() if t]
-    carb_types_in_cf = [t for t in cout_types if "CARBURANT" in t.upper() or t.upper() in {"GASOIL","GAZOIL","ESSENCE","FUEL"}]
-    nb_carburant_in_cf = db.query(CoutFlotte).filter(CoutFlotte.type_cout.in_(carb_types_in_cf)).count() if carb_types_in_cf else 0
-    nb_carburant_rows = db.query(Carburant).count()
-    nb_carburant_with_montant = db.query(Carburant).filter(Carburant.montant_total.isnot(None), Carburant.montant_total > 0).count()
-    sample_carburant = db.query(Carburant.matricule, Carburant.montant_total, Carburant.dernier_plein).filter(
-        Carburant.montant_total.isnot(None)
-    ).order_by(Carburant.montant_total.desc()).limit(5).all()
+    _KW = {"GASOIL", "GAZOIL", "ESSENCE", "FUEL", "CARB", "CARBURANT"}
+    carb_types_cf = [t for t in cout_types if "CARBURANT" in t.upper() or t.upper() in _KW]
+    nb_cf_carb = db.query(CoutFlotte).filter(CoutFlotte.type_cout.in_(carb_types_cf)).count() if carb_types_cf else 0
+
+    nb_carb_total    = db.query(Carburant).count()
+    nb_carb_montant  = db.query(Carburant).filter(Carburant.montant_total.isnot(None), Carburant.montant_total > 0).count()
+    nb_carb_qte      = db.query(Carburant).filter(Carburant.quantite_totale.isnot(None), Carburant.quantite_totale > 0).count()
+
+    sample = db.query(
+        Carburant.matricule, Carburant.montant_total,
+        Carburant.quantite_totale, Carburant.type_carburant, Carburant.dernier_plein
+    ).limit(5).all()
+
     return {
-        "coutflotte_all_types_cout": cout_types,
-        "coutflotte_carb_types_detected": carb_types_in_cf,
-        "coutflotte_nb_rows_carburant": nb_carburant_in_cf,
-        "carburant_table_total_rows": nb_carburant_rows,
-        "carburant_table_rows_with_montant": nb_carburant_with_montant,
-        "carburant_top5_sample": [
-            {"matricule": r.matricule, "montant_total": r.montant_total, "dernier_plein": str(r.dernier_plein)}
-            for r in sample_carburant
+        "coutflotte_tous_types_cout": cout_types,
+        "coutflotte_types_carburant_detectes": carb_types_cf,
+        "coutflotte_nb_lignes_carburant": nb_cf_carb,
+        "carburant_table_nb_total": nb_carb_total,
+        "carburant_table_nb_avec_montant": nb_carb_montant,
+        "carburant_table_nb_avec_quantite": nb_carb_qte,
+        "carburant_5_premiers": [
+            {
+                "matricule": r.matricule,
+                "montant_total": r.montant_total,
+                "quantite_totale": r.quantite_totale,
+                "type_carburant": r.type_carburant,
+                "dernier_plein": str(r.dernier_plein),
+            }
+            for r in sample
         ],
     }
 
@@ -283,19 +296,14 @@ def top_carburant(
     fournisseur:    str | None  = Query(None),
     type_location:  str | None  = Query(None),
     limit:          int         = Query(10, le=100),
-    type_carburant: str | None  = Query(None),  # conservé compatibilité, ignoré
+    type_carburant: str | None  = Query(None),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """Top N véhicules par coût carburant.
-    Stratégie : CoutFlotte en priorité (filtrage temporel exact) ; fallback Carburant si vide."""
-
-    # ── 1. Essai CoutFlotte — données mensuelles agrégées ──────────────────
+    # ── 1. CoutFlotte — détecte dynamiquement les type_cout carburant ─────
     _CARB_KEYWORDS = {"GASOIL", "GAZOIL", "ESSENCE", "FUEL", "CARB", "CARBURANT"}
-    carb_types = [
-        t for (t,) in db.query(CoutFlotte.type_cout).distinct().all()
-        if t and ("CARBURANT" in t.upper() or t.upper() in _CARB_KEYWORDS)
-    ]
+    all_types = [t for (t,) in db.query(CoutFlotte.type_cout).distinct().all() if t]
+    carb_types = [t for t in all_types if "CARBURANT" in t.upper() or t.upper() in _CARB_KEYWORDS]
 
     if carb_types:
         q = db.query(
@@ -306,8 +314,8 @@ def top_carburant(
         ).filter(CoutFlotte.type_cout.in_(carb_types))
         q = _apply_filters(q, annee, mois, plaque, type_vehicule, fournisseur, type_location)
         q = q.group_by(CoutFlotte.plaque_immatriculation).order_by(func.sum(CoutFlotte.valeur).desc()).limit(limit)
-        results = q.all()
-        if results:
+        rows = q.all()
+        if rows:
             return [
                 VehiculeCoutPoint(
                     plaque_immatriculation=r.plaque_immatriculation,
@@ -315,20 +323,27 @@ def top_carburant(
                     type_vehicule=r.type_vehicule,
                     total=float(r.total),
                 )
-                for r in results
+                for r in rows
             ]
 
-    # ── 2. Fallback — table Carburant (photo cumulative du parc) ──────────
-    # NB : Carburant stocke des totaux cumulatifs par véhicule (pas des séries mensuelles).
-    # On ne filtre PAS par année/mois ici — ce serait exclure les véhicules sans dernier_plein.
-    q2 = db.query(
-        Carburant.matricule.label("plaque_immatriculation"),
-        func.coalesce(func.sum(Carburant.montant_total), 0).label("total"),
-    )
-    if plaque:
-        q2 = q2.filter(Carburant.matricule == plaque)
-    q2 = q2.filter(Carburant.montant_total.isnot(None), Carburant.montant_total > 0)
-    q2 = q2.group_by(Carburant.matricule).order_by(func.sum(Carburant.montant_total).desc()).limit(limit)
+    # ── 2. Fallback table Carburant — données cumulatives par véhicule ────
+    # Pas de filtre temporel : cette table est une photo cumulative du parc.
+    # On tente montant_total, puis quantite_totale si tout est NULL.
+    def _carb_query(value_col, order_col):
+        q2 = db.query(
+            Carburant.matricule.label("plaque_immatriculation"),
+            func.coalesce(func.sum(value_col), 0).label("total"),
+        )
+        if plaque:
+            q2 = q2.filter(Carburant.matricule == plaque)
+        q2 = q2.filter(value_col.isnot(None))
+        q2 = q2.group_by(Carburant.matricule).order_by(func.sum(order_col).desc().nullslast()).limit(limit)
+        return q2.all()
+
+    rows2 = _carb_query(Carburant.montant_total, Carburant.montant_total)
+    if not rows2:
+        rows2 = _carb_query(Carburant.quantite_totale, Carburant.quantite_totale)
+
     return [
         VehiculeCoutPoint(
             plaque_immatriculation=r.plaque_immatriculation,
@@ -336,7 +351,7 @@ def top_carburant(
             type_vehicule=None,
             total=float(r.total),
         )
-        for r in q2.all()
+        for r in rows2
     ]
 
 
