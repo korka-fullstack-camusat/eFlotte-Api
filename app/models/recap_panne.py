@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, JSON
+from sqlalchemy import Column, Integer, String, JSON, Boolean
 from ..database import Base
 
 
@@ -13,5 +13,6 @@ class RecapPanneVehicule(Base):
     label                  = Column(String(200), nullable=True)
     fuel_type              = Column(String(50), nullable=True)
     car_group              = Column(String(300), nullable=True)
-    # Clés = "YYYY-MM" ; valeurs = "En service" | "En maintenance" | "Immobilisé" | null
+    # Clés = "YYYY-MM" ; valeurs = "En service" | "En maintenance" | "Immobilisé" | "Sorti" | null
     statuts_mensuels       = Column(JSON, nullable=False, default=dict)
+    sorti                  = Column(Boolean, nullable=False, default=False)  # Véhicule sorti de la flotte

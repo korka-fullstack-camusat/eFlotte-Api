@@ -48,6 +48,23 @@ with engine.begin() as conn:
         ALTER TABLE carburant
             ADD COLUMN IF NOT EXISTS mois INTEGER NOT NULL DEFAULT 1
     """))
+    # SuiviPanne — statut
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE suivi_pannes
+            ADD COLUMN IF NOT EXISTS statut VARCHAR(50) DEFAULT 'EN_COURS'
+    """))
+    # MissionChauffeur — motif + heures
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE missions_chauffeur
+            ADD COLUMN IF NOT EXISTS motif VARCHAR(255),
+            ADD COLUMN IF NOT EXISTS heure_debut TIME,
+            ADD COLUMN IF NOT EXISTS heure_fin TIME
+    """))
+    # RecapPanneVehicule — sorti
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE recap_pannes_vehicules
+            ADD COLUMN IF NOT EXISTS sorti BOOLEAN NOT NULL DEFAULT FALSE
+    """))
 print("✓ Colonnes à jour.")
 
 db = SessionLocal()

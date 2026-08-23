@@ -14,6 +14,7 @@ class SuiviPanneBase(BaseModel):
     site: str | None = None
     immobilisation_jrs: float | None = None
     commentaire: str | None = None
+    statut: str | None = "EN_COURS"  # EN_COURS | REPARE | A_CONFIRMER
 
 
 class SuiviPanneCreate(SuiviPanneBase):
@@ -32,6 +33,7 @@ class SuiviPanneUpdate(BaseModel):
     site: str | None = None
     immobilisation_jrs: float | None = None
     commentaire: str | None = None
+    statut: str | None = None
 
 
 class SuiviPanneOut(SuiviPanneBase):

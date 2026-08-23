@@ -52,8 +52,8 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
 
 
 def require_editor(current_user: User = Depends(get_current_user)) -> User:
-    """À utiliser sur les routes de création/modification/suppression/import.
-    Bloque les comptes en lecture seule (role == VIEWER)."""
+    """Bloque les comptes en lecture seule (VIEWER).
+    ADMIN, EDITOR et HSE peuvent écrire."""
     if current_user.role == "VIEWER":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

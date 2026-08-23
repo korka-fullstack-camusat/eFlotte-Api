@@ -70,6 +70,42 @@ def list_sinistres(
     return {"total": total, "items": [SuiviSinistreOut.model_validate(i) for i in items]}
 
 
+@router.get("/stats")
+def stats_sinistres(
+    db: Session = Depends(get_db),
+    _=Depends(get_current_user),
+):
+    """Stats tableau de bord : répartition ACCIDENT / INCIDENT et par statut."""
+    rows = db.query(SuiviSinistre).all()
+    total = len(rows)
+
+    # Répartition par circonstances
+    circ_map: dict[str, int] = {}
+    for r in rows:
+        key = (r.circonstances or "Non renseigné").strip().upper()
+        circ_map[key] = circ_map.get(key, 0) + 1
+
+    # Regrouper : ACCIDENT / INCIDENT / autre
+    nb_accident = circ_map.get("ACCIDENT", 0)
+    nb_incident  = circ_map.get("INCIDENT",  0)
+    nb_autre     = total - nb_accident - nb_incident
+
+    # Répartition par statut
+    statut_map: dict[str, int] = {}
+    for r in rows:
+        key = (r.statut or "Non renseigné").strip()
+        statut_map[key] = statut_map.get(key, 0) + 1
+
+    return {
+        "total": total,
+        "nb_accident": nb_accident,
+        "nb_incident":  nb_incident,
+        "nb_autre":     nb_autre,
+        "circonstances": [{"label": k, "value": v} for k, v in circ_map.items()],
+        "par_statut":    [{"label": k, "value": v} for k, v in statut_map.items()],
+    }
+
+
 @router.post("", response_model=SuiviSinistreOut)
 def create_sinistre(body: SuiviSinistreCreate, db: Session = Depends(get_db), _=Depends(require_editor)):
     obj = SuiviSinistre(**body.model_dump())

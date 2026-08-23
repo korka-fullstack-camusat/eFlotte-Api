@@ -121,8 +121,13 @@ async def import_missions(
     # Ligne 1 = titre ("ANNEE 2026"), ligne 2 = en-têtes -> header=1
     df = xls.parse(sheet_name, header=1)
     df.columns = [str(c).strip() for c in df.columns]
-    required_cols = ["DATE", "IMMA", "CHAUFFEUR", "DEMANDEUR", "TELEPHONE", "PROJET", "DESTINATION", "DATE DEPART", "DATE RETOUR", "COMMENTAIRES"]
-    missing = [c for c in required_cols if c not in df.columns]
+    # Accepte DESTINATION ou MOTIF comme colonne
+    has_motif       = "MOTIF" in df.columns
+    has_destination = "DESTINATION" in df.columns
+    required_base = ["DATE", "IMMA", "CHAUFFEUR", "DEMANDEUR", "TELEPHONE", "PROJET", "DATE DEPART", "DATE RETOUR", "COMMENTAIRES"]
+    if not has_motif and not has_destination:
+        required_base.append("DESTINATION")  # force l'erreur si aucun des deux
+    missing = [c for c in required_base if c not in df.columns]
     if missing:
         raise HTTPException(400, f"Colonnes manquantes dans '{sheet_name}': {', '.join(missing)}")
 
@@ -138,8 +143,21 @@ async def import_missions(
     def clean_str(v) -> str | None:
         return None if pd.isna(v) else str(v).strip()
 
+    def parse_time(v) -> datetime.time | None:
+        if pd.isna(v):
+            return None
+        try:
+            if isinstance(v, datetime.time):
+                return v
+            t = pd.to_datetime(str(v), format="%H:%M", errors="coerce")
+            if pd.isna(t):
+                t = pd.to_datetime(str(v), errors="coerce")
+            return t.time() if not pd.isna(t) else None
+        except Exception:
+            return None
+
     existing_map = {
-        (m.date, m.immatriculation, m.demandeur, m.destination): m
+        (m.date, m.immatriculation, m.demandeur, m.motif or m.destination): m
         for m in db.query(MissionChauffeur).all()
     }
 
@@ -148,8 +166,10 @@ async def import_missions(
             mission_date = parse_date(row["DATE"])
             immatriculation = clean_str(row["IMMA"])
             if mission_date is None or not immatriculation:
-                # ligne de séparation (ex: "MOIS D AVRIL 2026") ou ligne vide
                 continue
+
+            motif_val = clean_str(row.get("MOTIF")) if has_motif else None
+            dest_val  = clean_str(row.get("DESTINATION")) if has_destination else None
 
             values = dict(
                 date=mission_date,
@@ -158,13 +178,16 @@ async def import_missions(
                 demandeur=clean_str(row["DEMANDEUR"]),
                 telephone=clean_str(row["TELEPHONE"]),
                 projet=clean_str(row["PROJET"]),
-                destination=clean_str(row["DESTINATION"]),
+                motif=motif_val or dest_val,
+                destination=dest_val,
+                heure_debut=parse_time(row.get("HEURE DE DEBUT") or row.get("HEURE DEBUT") or row.get("H DEBUT")),
+                heure_fin=parse_time(row.get("HEURE DE FIN") or row.get("HEURE FIN") or row.get("H FIN")),
                 date_depart=parse_date(row["DATE DEPART"]),
                 date_retour=parse_date(row["DATE RETOUR"]),
                 commentaires=clean_str(row["COMMENTAIRES"]),
             )
 
-            key = (mission_date, immatriculation, values["demandeur"], values["destination"])
+            key = (mission_date, immatriculation, values["demandeur"], motif_val or dest_val)
             existing = existing_map.get(key)
             if existing:
                 for k, v in values.items():

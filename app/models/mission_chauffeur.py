@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Text
+from sqlalchemy import Column, Integer, String, Date, Text, Time
 from ..database import Base
 
 
@@ -13,7 +13,10 @@ class MissionChauffeur(Base):
     demandeur       = Column(String(150), nullable=True)
     telephone       = Column(String(30), nullable=True)
     projet          = Column(String(150), nullable=True)
-    destination     = Column(String(255), nullable=True)
+    motif           = Column(String(255), nullable=True)   # remplace destination
+    destination     = Column(String(255), nullable=True)   # conservé pour rétrocompatibilité
+    heure_debut     = Column(Time, nullable=True)
+    heure_fin       = Column(Time, nullable=True)
     date_depart     = Column(Date, nullable=True)
     date_retour     = Column(Date, nullable=True)
     commentaires    = Column(Text, nullable=True)

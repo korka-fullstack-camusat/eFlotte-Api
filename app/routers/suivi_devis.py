@@ -59,6 +59,50 @@ def filtres_devis(
     )
 
 
+@router.get("/stats")
+def stats_devis(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """KPIs tableau de bord : coûts entretien/réparation + PO par fournisseur."""
+    from sqlalchemy import func as sqlfunc
+
+    rows = db.query(SuiviDevis).all()
+
+    # Coût total entretien (descriptions contient "ENT" ou "ENTRETIEN")
+    cout_entretien = sum(
+        (r.montant or 0) for r in rows
+        if r.descriptions and "ENT" in r.descriptions.upper()
+    )
+    # Coût total réparation (descriptions contient "REP" ou "REPARATION")
+    cout_reparation = sum(
+        (r.montant or 0) for r in rows
+        if r.descriptions and any(k in r.descriptions.upper() for k in ("REP", "REPARATION", "RÉPARATION"))
+    )
+    # Montant total global
+    cout_total = sum(r.montant or 0 for r in rows)
+
+    # PO par fournisseur (sous_traitant)
+    po_map: dict[str, int] = {}
+    for r in rows:
+        if r.sous_traitant and r.po_emis:
+            key = r.sous_traitant.strip()
+            po_map[key] = po_map.get(key, 0) + 1
+
+    po_par_fournisseur = [
+        {"fournisseur": k, "nb_po": v}
+        for k, v in sorted(po_map.items(), key=lambda x: -x[1])
+    ]
+
+    return {
+        "cout_total":       round(cout_total, 2),
+        "cout_entretien":   round(cout_entretien, 2),
+        "cout_reparation":  round(cout_reparation, 2),
+        "nb_total":         len(rows),
+        "po_par_fournisseur": po_par_fournisseur,
+    }
+
+
 @router.post("", response_model=SuiviDevisOut, status_code=201)
 def create_devis(
     payload: SuiviDevisCreate,

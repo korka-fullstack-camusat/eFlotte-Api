@@ -9,7 +9,10 @@ class MissionChauffeurBase(BaseModel):
     demandeur: str | None = None
     telephone: str | None = None
     projet: str | None = None
-    destination: str | None = None
+    motif: str | None = None
+    destination: str | None = None  # conservé pour rétrocompatibilité import
+    heure_debut: datetime.time | None = None
+    heure_fin: datetime.time | None = None
     date_depart: datetime.date | None = None
     date_retour: datetime.date | None = None
     commentaires: str | None = None
@@ -26,7 +29,10 @@ class MissionChauffeurUpdate(BaseModel):
     demandeur: str | None = None
     telephone: str | None = None
     projet: str | None = None
+    motif: str | None = None
     destination: str | None = None
+    heure_debut: datetime.time | None = None
+    heure_fin: datetime.time | None = None
     date_depart: datetime.date | None = None
     date_retour: datetime.date | None = None
     commentaires: str | None = None

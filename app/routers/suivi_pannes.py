@@ -30,10 +30,15 @@ def _apply_filters(q, projet, garage, site, immatriculation, statut, search):
         q = q.filter(SuiviPanne.site == site)
     if immatriculation:
         q = q.filter(SuiviPanne.immatriculation == immatriculation)
-    if statut == "repare":
-        q = q.filter(SuiviPanne.date_fin_reparation.isnot(None))
-    elif statut == "en_cours":
-        q = q.filter(SuiviPanne.date_fin_reparation.is_(None))
+    if statut:
+        # Filtre sur le vrai champ statut (EN_COURS / REPARE / A_CONFIRMER)
+        # Rétrocompat : si pas de statut enregistré, fallback sur date_fin_reparation
+        if statut == "REPARE":
+            q = q.filter(SuiviPanne.statut == "REPARE")
+        elif statut == "EN_COURS":
+            q = q.filter(SuiviPanne.statut == "EN_COURS")
+        elif statut == "A_CONFIRMER":
+            q = q.filter(SuiviPanne.statut == "A_CONFIRMER")
     if search:
         like = f"%{search}%"
         q = q.filter(
@@ -222,12 +227,15 @@ def update_recap_vehicule(
 
 
 def _apply_recap_patch(row: RecapPanneVehicule, payload: dict, db: Session) -> dict:
-    FIXED_FIELDS = {"brand", "model", "label", "fuel_type", "car_group"}
+    FIXED_FIELDS = {"brand", "model", "label", "fuel_type", "car_group", "sorti"}
     statuts = dict(row.statuts_mensuels or {})
 
     for key, value in payload.items():
         if key in FIXED_FIELDS:
-            setattr(row, key, value or None)
+            if key == "sorti":
+                setattr(row, key, bool(value))
+            else:
+                setattr(row, key, value or None)
         elif len(key) == 7 and key[4] == "-":  # YYYY-MM
             statuts[key] = value or None
 
@@ -252,6 +260,7 @@ def _apply_recap_patch(row: RecapPanneVehicule, payload: dict, db: Session) -> d
         "label": row.label,
         "fuel_type": row.fuel_type,
         "car_group": row.car_group,
+        "sorti": row.sorti,
         "statuts_mensuels": row.statuts_mensuels,
     }
 

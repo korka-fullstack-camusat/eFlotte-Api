@@ -18,3 +18,4 @@ class SuiviPanne(Base):
     site                 = Column(String(150), nullable=True)
     immobilisation_jrs   = Column(Float, nullable=True)
     commentaire          = Column(String(500), nullable=True)
+    statut               = Column(String(50), nullable=True, default="EN_COURS")  # EN_COURS | REPARE | A_CONFIRMER
