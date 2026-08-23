@@ -167,6 +167,27 @@ def stats_carburant(
     )
 
 
+# ── Création manuelle ─────────────────────────────────────────────────────────
+
+@router.post("", response_model=CarburantOut)
+def create_carburant(
+    payload: CarburantBase,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_editor),
+):
+    existing = db.query(Carburant).filter(
+        Carburant.matricule == payload.matricule,
+        Carburant.mois == payload.mois,
+    ).first()
+    if existing:
+        raise HTTPException(409, "Une entrée existe déjà pour ce matricule et ce mois.")
+    item = Carburant(**payload.model_dump())
+    db.add(item)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 # ── Mise à jour partielle ──────────────────────────────────────────────────────
 
 @router.patch("/{item_id}", response_model=CarburantOut)
