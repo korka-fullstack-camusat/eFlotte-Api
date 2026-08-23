@@ -7,7 +7,7 @@ from sqlalchemy import func
 from ..database import get_db
 from ..models.carburant import Carburant
 from ..models.user import User
-from ..schemas.carburant import CarburantOut, CarburantPage, CarburantStats, CarburantUpdate, ImportCarburantResult
+from ..schemas.carburant import CarburantBase, CarburantOut, CarburantPage, CarburantStats, CarburantUpdate, ImportCarburantResult
 from ..services.auth_service import get_current_user, require_editor
 
 router = APIRouter(prefix="/api/carburant", tags=["Carburant"])
