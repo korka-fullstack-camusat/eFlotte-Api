@@ -69,7 +69,7 @@ def list_couts(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    q = db.query(CoutFlotte)
+    q = db.query(CoutFlotte).filter(CoutFlotte.type_cout != "CARBURANT")
     q = _apply_filters(q, annee, mois, plaque, type_vehicule, fournisseur, type_location)
     if type_cout:
         q = q.filter(CoutFlotte.type_cout == type_cout.upper())
@@ -175,7 +175,7 @@ def filtres_couts(
         {m for (m,) in db.query(CoutFlotte.mois).distinct().all() if m}
     )
     annees = sorted({m.year for m in mois}) if mois else []
-    types_cout = sorted(t for (t,) in db.query(CoutFlotte.type_cout).distinct().all() if t)
+    types_cout = sorted(t for (t,) in db.query(CoutFlotte.type_cout).distinct().all() if t and t != "CARBURANT")
     return FiltresCouts(
         annees=annees,
         mois=mois,
