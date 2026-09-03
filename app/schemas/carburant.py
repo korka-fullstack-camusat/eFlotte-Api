@@ -1,10 +1,11 @@
-from datetime import date
+import datetime
 from pydantic import BaseModel
 
 
 class CarburantBase(BaseModel):
     matricule:       str
     mois:            int   = 1
+    annee:           int   = datetime.date.today().year
     quantite_totale: float | None = None
     montant_total:   float | None = None
     mt_ht:           float | None = None
@@ -13,7 +14,7 @@ class CarburantBase(BaseModel):
     distance_totale: float | None = None
     distance_gps:    float | None = None
     car_group:       str   | None = None
-    dernier_plein:   date  | None = None
+    dernier_plein:   datetime.date | None = None
     driver_name:     str   | None = None
     nom_chauffeur:   str   | None = None
     code_projet:     str   | None = None
@@ -55,7 +56,7 @@ class CarburantUpdate(BaseModel):
     distance_totale: float | None = None
     distance_gps:    float | None = None
     car_group:       str   | None = None
-    dernier_plein:   date  | None = None
+    dernier_plein:   datetime.date | None = None
     driver_name:     str   | None = None
     nom_chauffeur:   str   | None = None
     code_projet:     str   | None = None
@@ -63,7 +64,8 @@ class CarburantUpdate(BaseModel):
 
 
 class ImportCarburantResult(BaseModel):
-    created:      int
-    updated:      int
-    errors:       list[dict]
-    mois_detecte: int  # mois réellement utilisé (1–12), auto-détecté ou forcé
+    created:       int
+    updated:       int
+    errors:        list[dict]
+    mois_detecte:  int  # mois réellement utilisé (1–12), auto-détecté ou forcé
+    annee_detecte: int  # année réellement utilisée

@@ -58,6 +58,7 @@ def get_filtres(db: Session = Depends(get_db), _: User = Depends(get_current_use
 @router.get("", response_model=CarburantPage)
 def list_carburant(
     mois:           int | None = Query(None, ge=1, le=12),
+    annee:          int | None = Query(None),
     matricule:      str | None = None,
     car_group:      str | None = None,
     type_carburant: str | None = None,
@@ -72,6 +73,8 @@ def list_carburant(
 
     if mois is not None:
         q = q.filter(Carburant.mois == mois)
+    if annee is not None:
+        q = q.filter(Carburant.annee == annee)
     if matricule:
         q = q.filter(Carburant.matricule == matricule)
     if car_group:
@@ -117,6 +120,8 @@ def stats_carburant(
         q = q.filter(func.upper(Carburant.type_carburant) == type_carburant.upper())
     if mois is not None:
         q = q.filter(Carburant.mois == mois)
+    if annee is not None:
+        q = q.filter(Carburant.annee == annee)
 
     rows = q.all()
 
@@ -178,9 +183,10 @@ def create_carburant(
     existing = db.query(Carburant).filter(
         Carburant.matricule == payload.matricule,
         Carburant.mois == payload.mois,
+        Carburant.annee == payload.annee,
     ).first()
     if existing:
-        raise HTTPException(409, "Une entrée existe déjà pour ce matricule et ce mois.")
+        raise HTTPException(409, "Une entrée existe déjà pour ce matricule, ce mois et cette année.")
     item = Carburant(**payload.model_dump())
     db.add(item)
     db.commit()
@@ -264,10 +270,37 @@ def _detect_mois(filename: str, xls: pd.ExcelFile, sheet_name: str) -> int | Non
 
 # ── Import Excel ───────────────────────────────────────────────────────────────
 
+import datetime as _dt
+
+def _detect_annee(filename: str, xls: pd.ExcelFile, sheet_name: str) -> int | None:
+    import re
+    current_year = _dt.date.today().year
+    valid = range(2015, current_year + 2)
+    for src in [filename, sheet_name]:
+        for m in re.findall(r"\b(20\d{2})\b", src):
+            y = int(m)
+            if y in valid:
+                return y
+    try:
+        df_head = xls.parse(sheet_name, header=None, nrows=5)
+        for row in df_head.itertuples(index=False):
+            for cell in row:
+                if pd.isna(cell):
+                    continue
+                for m in re.findall(r"\b(20\d{2})\b", str(cell)):
+                    y = int(m)
+                    if y in valid:
+                        return y
+    except Exception:
+        pass
+    return None
+
+
 @router.post("/import", response_model=ImportCarburantResult)
 async def import_carburant(
     file: UploadFile = File(...),
-    mois: int = Query(1, ge=1, le=12, description="Mois de l'import (1=Janvier … 12=Décembre)"),
+    mois:  int = Query(1,                              ge=1, le=12, description="Mois de l'import (1=Janvier … 12=Décembre)"),
+    annee: int = Query(_dt.date.today().year,          ge=2015, le=2100, description="Année de l'import"),
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
@@ -284,10 +317,13 @@ async def import_carburant(
     if not sheet_name:
         raise HTTPException(400, "Feuille 'CARBURANT' introuvable dans le fichier")
 
-    # Auto-détection du mois depuis le fichier (priorité sur le paramètre par défaut)
-    detected = _detect_mois(file.filename or "", xls, sheet_name)
-    if detected:
-        mois = detected
+    # Auto-détection mois et année depuis le fichier
+    detected_mois = _detect_mois(file.filename or "", xls, sheet_name)
+    if detected_mois:
+        mois = detected_mois
+    detected_annee = _detect_annee(file.filename or "", xls, sheet_name)
+    if detected_annee:
+        annee = detected_annee
 
     df = xls.parse(sheet_name, header=0)
     df.columns = [str(c).strip() for c in df.columns]
@@ -297,9 +333,10 @@ async def import_carburant(
         None,
     )
 
-    # Clé unique = (matricule, mois) — un véhicule peut avoir un enregistrement par mois
-    existing_map: dict[tuple[str, int], Carburant] = {
-        (r.matricule, r.mois): r for r in db.query(Carburant).filter(Carburant.mois == mois).all()
+    # Clé unique = (matricule, mois, annee) — pas d'écrasement inter-années
+    existing_map: dict[tuple[str, int, int], Carburant] = {
+        (r.matricule, r.mois, r.annee): r
+        for r in db.query(Carburant).filter(Carburant.mois == mois, Carburant.annee == annee).all()
     }
 
     created = 0
@@ -323,6 +360,7 @@ async def import_carburant(
             values = dict(
                 matricule       = matr,
                 mois            = mois,
+                annee           = annee,
                 quantite_totale = _cf(row.get("QuantiteTotale")),
                 montant_total   = _cf(row.get("MontantTotal")),
                 mt_ht           = _cf(row.get("Mt HT")),
@@ -338,7 +376,7 @@ async def import_carburant(
                 num_carte       = _cs(row.get("NumCarte")),
             )
 
-            key = (matr, mois)
+            key = (matr, mois, annee)
             existing = existing_map.get(key)
             if existing:
                 for k, v in values.items():
@@ -354,4 +392,4 @@ async def import_carburant(
             errors.append({"ligne": int(idx) + 2, "message": str(e)})
 
     db.commit()
-    return ImportCarburantResult(created=created, updated=updated, errors=errors, mois_detecte=mois)
+    return ImportCarburantResult(created=created, updated=updated, errors=errors, mois_detecte=mois, annee_detecte=annee)

@@ -48,6 +48,33 @@ with engine.begin() as conn:
         ALTER TABLE carburant
             ADD COLUMN IF NOT EXISTS mois INTEGER NOT NULL DEFAULT 1
     """))
+    import datetime as _dt
+    current_year = _dt.date.today().year
+    conn.execute(sqlalchemy.text(f"""
+        ALTER TABLE carburant
+            ADD COLUMN IF NOT EXISTS annee INTEGER NOT NULL DEFAULT {current_year}
+    """))
+    # Corriger le mois depuis dernier_plein pour les lignes avec DEFAULT 1
+    conn.execute(sqlalchemy.text("""
+        UPDATE carburant
+        SET mois = EXTRACT(MONTH FROM dernier_plein)::INTEGER
+        WHERE dernier_plein IS NOT NULL
+          AND mois = 1
+          AND EXTRACT(MONTH FROM dernier_plein) != 1
+    """))
+    # Rapatrier les lignes qui ont l'ancien default (2025) vers l'année courante
+    conn.execute(sqlalchemy.text(f"""
+        UPDATE carburant SET annee = {current_year} WHERE annee = 2025
+    """))
+    # Corriger l'année depuis dernier_plein pour les lignes avec DEFAULT année courante
+    conn.execute(sqlalchemy.text(f"""
+        UPDATE carburant
+        SET annee = EXTRACT(YEAR FROM dernier_plein)::INTEGER
+        WHERE dernier_plein IS NOT NULL
+          AND annee = {current_year}
+          AND EXTRACT(YEAR FROM dernier_plein) BETWEEN 2015 AND {current_year + 1}
+          AND EXTRACT(YEAR FROM dernier_plein) != {current_year}
+    """))
     # SuiviPanne — statut
     conn.execute(sqlalchemy.text("""
         ALTER TABLE suivi_pannes
