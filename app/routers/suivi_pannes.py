@@ -218,6 +218,148 @@ def recap_pannes(
     }
 
 
+@router.post("/recap/import")
+async def import_recap_pannes(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_editor),
+):
+    """Import de la feuille 'RECAP DES PANNES' depuis un fichier Excel."""
+    import unicodedata, re
+
+    contents = await file.read()
+    try:
+        xls = pd.ExcelFile(io.BytesIO(contents))
+    except Exception:
+        raise HTTPException(400, "Fichier invalide — format Excel attendu (.xlsx / .xls)")
+
+    sheet = next(
+        (s for s in xls.sheet_names if "RECAP" in s.upper() and "PANNE" in s.upper()),
+        None,
+    )
+    if not sheet:
+        raise HTTPException(400, "Feuille 'RECAP DES PANNES' introuvable dans ce fichier")
+
+    # Détection de la ligne d'en-tête
+    df = None
+    for h in range(0, 5):
+        try:
+            candidate = xls.parse(sheet, header=h)
+            candidate.columns = [" ".join(str(c).split()) for c in candidate.columns]
+            if any(k in str(c).upper() for c in candidate.columns for k in ("REG", "BRAND", "MODEL")):
+                df = candidate
+                break
+        except Exception:
+            continue
+
+    if df is None:
+        raise HTTPException(400, "Impossible de détecter la ligne d'en-tête dans RECAP DES PANNES")
+
+    def _find_col(cols, *keywords):
+        for kw in keywords:
+            for c in cols:
+                if kw.upper() in str(c).upper():
+                    return c
+        return None
+
+    def _cs(val):
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        s = str(val).strip()
+        return s if s and s.lower() not in ("nan", "none", "") else None
+
+    MOIS_MAP = {
+        "JANV": 1, "FEVR": 2, "FEVRIER": 2, "MARS": 3, "AVRI": 4, "AVRIL": 4,
+        "MAI": 5, "JUIN": 6, "JUIL": 7, "AOUT": 8, "SEPT": 9,
+        "OCTO": 10, "NOVE": 11, "DECE": 12,
+    }
+
+    def _parse_mois_col(col_name: str):
+        s = unicodedata.normalize("NFD", str(col_name).strip())
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn").upper()
+        m = re.match(r"([A-Z]+)[-_\s](\d{2,4})$", s)
+        if not m:
+            return None
+        mois_str, annee_str = m.group(1), m.group(2)
+        mois_num = next((v for k, v in MOIS_MAP.items() if mois_str.startswith(k)), None)
+        if not mois_num:
+            return None
+        annee = int(annee_str) + 2000 if len(annee_str) == 2 else int(annee_str)
+        return f"{annee}-{mois_num:02d}"
+
+    cols = list(df.columns)
+    col_brand = _find_col(cols, "BRAND")
+    col_model = _find_col(cols, "MODEL")
+    col_reg   = _find_col(cols, "REG", "PLAQUE", "IMMA")
+    col_label = _find_col(cols, "LABEL")
+    col_fuel  = _find_col(cols, "FUEL", "CARBURANT")
+    col_group = _find_col(cols, "CAR GROUP", "GROUP")
+
+    if not col_reg:
+        raise HTTPException(400, "Colonne Reg. N° introuvable")
+
+    fixed = {col_brand, col_model, col_reg, col_label, col_fuel, col_group, None}
+    mois_cols: dict[str, str] = {}
+    for c in cols:
+        if c in fixed:
+            continue
+        iso = _parse_mois_col(str(c))
+        if iso:
+            mois_cols[c] = iso
+
+    if not mois_cols:
+        raise HTTPException(400, "Aucune colonne mensuelle détectée (ex: janv-26, févr-26…)")
+
+    existing_map = {r.plaque_immatriculation: r for r in db.query(RecapPanneVehicule).all()}
+    created = updated = 0
+    errors = []
+
+    for idx, row in df.iterrows():
+        try:
+            plaque = _cs(row.get(col_reg))
+            if not plaque:
+                continue
+            if any(kw in plaque.upper() for kw in ("TOTAL", "SOUS", "GRAND")):
+                continue
+            statuts = {iso: (_cs(row.get(col)) or None) for col, iso in mois_cols.items()}
+            vals = dict(
+                brand=_cs(row.get(col_brand)) if col_brand else None,
+                model=_cs(row.get(col_model)) if col_model else None,
+                label=_cs(row.get(col_label)) if col_label else None,
+                fuel_type=_cs(row.get(col_fuel)) if col_fuel else None,
+                car_group=_cs(row.get(col_group)) if col_group else None,
+                statuts_mensuels=statuts,
+            )
+            existing = existing_map.get(plaque)
+            if existing:
+                for k, v in vals.items():
+                    setattr(existing, k, v)
+                updated += 1
+            else:
+                new_r = RecapPanneVehicule(plaque_immatriculation=plaque, **vals)
+                db.add(new_r)
+                existing_map[plaque] = new_r
+                created += 1
+        except Exception as e:
+            errors.append({"ligne": int(idx) + 2, "message": str(e)})
+
+    db.commit()
+
+    # Mettre à jour vehicule.statut avec le statut du mois le plus récent
+    vehicule_map_upd = {v.plaque_immatriculation: v for v in db.query(Vehicule).all()}
+    for recap in db.query(RecapPanneVehicule).all():
+        veh = vehicule_map_upd.get(recap.plaque_immatriculation)
+        if not veh or not recap.statuts_mensuels:
+            continue
+        dernier_mois = max(recap.statuts_mensuels.keys())
+        statut_actuel = recap.statuts_mensuels[dernier_mois]
+        if statut_actuel:
+            veh.statut = statut_actuel
+    db.commit()
+
+    return {"created": created, "updated": updated, "errors": errors}
+
+
 @router.patch("/recap/by-plaque/{plaque}")
 def update_recap_by_plaque(
     plaque: str,
