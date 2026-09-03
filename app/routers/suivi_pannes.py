@@ -88,7 +88,7 @@ def recap_pannes(
     recap_rows = db.query(RecapPanneVehicule).order_by(RecapPanneVehicule.plaque_immatriculation).all()
 
     if recap_rows:
-        # Filtrer les mois de l'année demandée présents dans les données
+        # Mois de l'année demandée présents dans les données importées
         all_mois: set[str] = set()
         for row in recap_rows:
             for iso in (row.statuts_mensuels or {}).keys():
@@ -107,13 +107,15 @@ def recap_pannes(
             if r.matricule and r.car_group
         }
 
+        # Index des plaques déjà dans les données importées
+        recap_map: dict[str, RecapPanneVehicule] = {r.plaque_immatriculation: r for r in recap_rows}
+
         result_vehicules = []
+
+        # 1. Véhicules avec données importées
         for row in recap_rows:
             veh = vehicule_map.get(row.plaque_immatriculation)
-            statuts = {
-                iso: (row.statuts_mensuels or {}).get(iso)
-                for iso in mois
-            }
+            statuts = {iso: (row.statuts_mensuels or {}).get(iso) for iso in mois}
             result_vehicules.append({
                 "id": row.id,
                 "immatriculation": row.plaque_immatriculation,
@@ -124,7 +126,27 @@ def recap_pannes(
                 "car_group": row.car_group or car_group_map.get(row.plaque_immatriculation),
                 "statut_actuel": veh.statut if veh else None,
                 "statuts": statuts,
+                "sorti": row.sorti,
             })
+
+        # 2. Véhicules NON importés : ajoutés depuis la table vehicule avec statuts vides
+        for v in sorted(all_vehicules, key=lambda x: x.plaque_immatriculation):
+            if v.plaque_immatriculation in recap_map:
+                continue
+            result_vehicules.append({
+                "id": None,
+                "immatriculation": v.plaque_immatriculation,
+                "marque": v.marque,
+                "modele": v.modele,
+                "chauffeur": v.chauffeur,
+                "type_carburant": v.type_carburant,
+                "car_group": car_group_map.get(v.plaque_immatriculation),
+                "statut_actuel": v.statut,
+                "statuts": {iso: None for iso in mois},
+                "sorti": False,
+            })
+
+        result_vehicules.sort(key=lambda x: x["immatriculation"])
 
         return {
             "annee": year,
@@ -179,6 +201,7 @@ def recap_pannes(
             "car_group": car_group_map.get(v.plaque_immatriculation),
             "statut_actuel": v.statut,
             "statuts": statuts,
+            "sorti": False,
         })
 
     return {
