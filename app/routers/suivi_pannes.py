@@ -245,12 +245,16 @@ async def import_recap_pannes(
 
     # Détection de la ligne d'en-tête
     df = None
+    raw_cols_orig = None  # colonnes brutes (avant str()) pour Timestamps
     for h in range(0, 5):
         try:
             candidate = xls.parse(sheet, header=h)
-            candidate.columns = [" ".join(str(c).split()) for c in candidate.columns]
-            if any(k in str(c).upper() for c in candidate.columns for k in ("REG", "BRAND", "MODEL")):
+            raw_cols = list(candidate.columns)
+            str_cols = [" ".join(str(c).split()) for c in raw_cols]
+            if any(k in str(c).upper() for c in str_cols for k in ("REG", "BRAND", "MODEL")):
+                candidate.columns = str_cols
                 df = candidate
+                raw_cols_orig = raw_cols
                 break
         except Exception:
             continue
@@ -278,14 +282,23 @@ async def import_recap_pannes(
         "OCT": 10, "NOV": 11, "DEC": 12,
     }
 
-    def _parse_mois_col(col_name: str):
-        s = unicodedata.normalize("NFD", str(col_name).strip())
+    def _parse_mois_col(col_name) -> str | None:
+        import pandas as _pd
+        # Cas 1 : pandas a lu la cellule comme une date (Timestamp / datetime)
+        if hasattr(col_name, "year") and hasattr(col_name, "month"):
+            return f"{col_name.year}-{col_name.month:02d}"
+        raw = str(col_name).strip()
+        # Cas 2 : pandas Timestamp converti en string "2026-01-01 00:00:00"
+        m_iso = re.match(r"(\d{4})-(\d{2})-\d{2}", raw)
+        if m_iso:
+            return f"{m_iso.group(1)}-{m_iso.group(2)}"
+        # Cas 3 : texte abrégé "janv-26", "févr-26", etc.
+        s = unicodedata.normalize("NFD", raw)
         s = "".join(c for c in s if unicodedata.category(c) != "Mn").upper()
         m = re.match(r"([A-Z]+)[-_\s](\d{2,4})$", s)
         if not m:
             return None
         mois_str, annee_str = m.group(1), m.group(2)
-        # Chercher le préfixe le plus long qui matche (évite ambiguïtés)
         mois_num = next((v for k, v in MOIS_MAP.items() if mois_str.startswith(k)), None)
         if not mois_num:
             return None
@@ -304,11 +317,14 @@ async def import_recap_pannes(
         raise HTTPException(400, "Colonne Reg. N° introuvable")
 
     fixed = {col_brand, col_model, col_reg, col_label, col_fuel, col_group, None}
+    # Associer chaque colonne str (nom dans df) à son objet brut (Timestamp ou str)
+    str_to_raw = {" ".join(str(r).split()): r for r in (raw_cols_orig or cols)}
     mois_cols: dict[str, str] = {}
     for c in cols:
         if c in fixed:
             continue
-        iso = _parse_mois_col(str(c))
+        raw = str_to_raw.get(c, c)  # objet brut pour gérer Timestamp
+        iso = _parse_mois_col(raw)
         if iso:
             mois_cols[c] = iso
 
