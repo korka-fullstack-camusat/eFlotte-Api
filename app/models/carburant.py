@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Float, Date, Text
+from sqlalchemy import Column, Integer, String, Float, Date, Text, Index
 from ..database import Base
 
 def _current_year() -> int:
@@ -29,3 +29,7 @@ class Carburant(Base):
     conso_100       = Column(Float)          # Conso/100 recommandée
     vehicle_type    = Column(String(100))    # Vehicle Type (Light, Truck…)
     dist_recommandee = Column(Float)         # Distance recommandée CO2
+
+    __table_args__ = (
+        Index("ix_carburant_annee_mois", "annee", "mois"),
+    )
