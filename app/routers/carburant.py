@@ -296,6 +296,25 @@ def _detect_annee(filename: str, xls: pd.ExcelFile, sheet_name: str) -> int | No
     return None
 
 
+def _get_col(df: pd.DataFrame, *names: str) -> str | None:
+    """Retourne le premier nom de colonne présent dans df."""
+    for n in names:
+        if n in df.columns:
+            return n
+    return None
+
+
+def _fuel_type(v) -> str | None:
+    if pd.isna(v):
+        return None
+    s = str(v).strip().upper()
+    if s in ("DIESEL", "GAZOIL", "GAZOLE", "GO"):
+        return "GAZOIL"
+    if s in ("PETROL", "PETROL95", "ESSENCE", "SP95", "SP98", "SP"):
+        return "ESSENCE"
+    return s or None
+
+
 @router.post("/import", response_model=ImportCarburantResult)
 async def import_carburant(
     file: UploadFile = File(...),
@@ -304,36 +323,64 @@ async def import_carburant(
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
+    import re
     content = await file.read()
     try:
         xls = pd.ExcelFile(io.BytesIO(content))
     except Exception:
         raise HTTPException(400, "Fichier Excel illisible")
 
+    # Feuille : priorité à "CARBURANT" dans le nom, sinon première feuille
     sheet_name = next(
         (s for s in xls.sheet_names if "CARBURANT" in s.strip().upper()),
-        None,
+        xls.sheet_names[0],
     )
-    if not sheet_name:
-        raise HTTPException(400, "Feuille 'CARBURANT' introuvable dans le fichier")
 
-    # Auto-détection mois et année depuis le fichier
-    detected_mois = _detect_mois(file.filename or "", xls, sheet_name)
-    if detected_mois:
-        mois = detected_mois
-    detected_annee = _detect_annee(file.filename or "", xls, sheet_name)
-    if detected_annee:
-        annee = detected_annee
+    # Trouver la ligne d'en-tête : cherche "Matricule" dans les 10 premières lignes
+    df_scan = xls.parse(sheet_name, header=None, nrows=10)
+    header_row = 0
+    for i, row in df_scan.iterrows():
+        if any(str(c).strip() == "Matricule" for c in row):
+            header_row = i
+            break
 
-    df = xls.parse(sheet_name, header=0)
+    df = xls.parse(sheet_name, header=header_row)
     df.columns = [str(c).strip() for c in df.columns]
 
-    type_col = next(
-        (c for c in df.columns if "Unnamed" in c or c.upper() in ("TYPE", "CARBURANT", "TYPE CARBURANT")),
-        None,
-    )
+    # Auto-détection mois/annee depuis la colonne "Période" (format YYYY-MM)
+    periode_col = _get_col(df, "Période", "Periode", "PERIODE")
+    if periode_col:
+        for val in df[periode_col].dropna().astype(str):
+            m = re.match(r"(\d{4})-(\d{2})", val.strip())
+            if m:
+                annee = int(m.group(1))
+                mois  = int(m.group(2))
+                break
+    else:
+        # Fallback : détection depuis nom de fichier / feuille
+        detected_mois = _detect_mois(file.filename or "", xls, sheet_name)
+        if detected_mois:
+            mois = detected_mois
+        detected_annee = _detect_annee(file.filename or "", xls, sheet_name)
+        if detected_annee:
+            annee = detected_annee
 
-    # Clé unique = (matricule, mois, annee) — pas d'écrasement inter-années
+    # Mapping des colonnes réelles → champs DB
+    litres_col   = _get_col(df, "Litres consommés", "Litres", "QuantiteTotale")
+    ttc_col      = _get_col(df, "Montant TTC", "MontantTotal", "Montant TTC")
+    ht_col       = _get_col(df, "Montant HT", "Mt HT")
+    dist_col     = _get_col(df, "Distance déclarée retenue", "Distance déclarée", "DistanceTotale")
+    gps_col      = _get_col(df, "Distance GPS")
+    cond_col     = _get_col(df, "Conducteur(s) ayant pris le carburant", "Conducteur", "DriverName")
+    bl_col       = _get_col(df, "Business Line(s)", "Business Line", "CodeProjet")
+    fuel_col     = _get_col(df, "Fuel type", "Type carburant", "Type Carburant", "TYPE")
+    cg_col       = _get_col(df, "Car Group", "CarGroup")
+    label_col    = _get_col(df, "Label")
+    carte_col    = _get_col(df, "Numéro(s) carte Total", "NumCarte", "Numéro carte")
+    prix_col     = _get_col(df, "PrixUnitaire", "Prix unitaire")
+    plein_col    = _get_col(df, "DernierPlein", "Dernier plein")
+
+    # Clé unique = (matricule, mois, annee)
     existing_map: dict[tuple[str, int, int], Carburant] = {
         (r.matricule, r.mois, r.annee): r
         for r in db.query(Carburant).filter(Carburant.mois == mois, Carburant.annee == annee).all()
@@ -350,30 +397,24 @@ async def import_carburant(
         if any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
             continue
 
-        type_carb = None
-        if type_col:
-            raw = _cs(row.get(type_col))
-            if raw and raw.upper() in ("GAZOIL", "ESSENCE"):
-                type_carb = raw.upper()
-
         try:
             values = dict(
                 matricule       = matr,
                 mois            = mois,
                 annee           = annee,
-                quantite_totale = _cf(row.get("QuantiteTotale")),
-                montant_total   = _cf(row.get("MontantTotal")),
-                mt_ht           = _cf(row.get("Mt HT")),
-                prix_unitaire   = _cf(row.get("PrixUnitaire")),
-                type_carburant  = type_carb,
-                distance_totale = _cf(row.get("DistanceTotale")),
-                distance_gps    = _cf(row.get("Distance GPS")),
-                car_group       = _cs(row.get("CarGroup")),
-                dernier_plein   = _cd(row.get("DernierPlein")),
-                driver_name     = _cs(row.get("DriverName")),
-                nom_chauffeur   = _cs(row.get("Nom de chauffeur")),
-                code_projet     = _cs(row.get("CodeProjet")),
-                num_carte       = _cs(row.get("NumCarte")),
+                quantite_totale = _cf(row.get(litres_col)) if litres_col else None,
+                montant_total   = _cf(row.get(ttc_col))    if ttc_col   else None,
+                mt_ht           = _cf(row.get(ht_col))     if ht_col    else None,
+                prix_unitaire   = _cf(row.get(prix_col))   if prix_col  else None,
+                type_carburant  = _fuel_type(row.get(fuel_col)) if fuel_col else None,
+                distance_totale = _cf(row.get(dist_col))   if dist_col  else None,
+                distance_gps    = _cf(row.get(gps_col))    if gps_col   else None,
+                car_group       = _cs(row.get(cg_col))     if cg_col    else None,
+                dernier_plein   = _cd(row.get(plein_col))  if plein_col else None,
+                driver_name     = _cs(row.get(cond_col))   if cond_col  else None,
+                nom_chauffeur   = _cs(row.get(label_col))  if label_col else None,
+                code_projet     = _cs(row.get(bl_col))     if bl_col    else None,
+                num_carte       = _cs(str(int(row.get(carte_col))) if carte_col and not pd.isna(row.get(carte_col)) else row.get(carte_col)) if carte_col else None,
             )
 
             key = (matr, mois, annee)
