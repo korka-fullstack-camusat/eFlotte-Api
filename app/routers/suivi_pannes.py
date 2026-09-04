@@ -237,8 +237,11 @@ async def import_recap_pannes(
         (s for s in xls.sheet_names if "RECAP" in s.upper() and "PANNE" in s.upper()),
         None,
     )
+    # Fallback : si aucune feuille "RECAP DES PANNES", prendre la première feuille
     if not sheet:
-        raise HTTPException(400, "Feuille 'RECAP DES PANNES' introuvable dans ce fichier")
+        sheet = xls.sheet_names[0] if xls.sheet_names else None
+    if not sheet:
+        raise HTTPException(400, "Fichier Excel vide — aucune feuille trouvée")
 
     # Détection de la ligne d'en-tête
     df = None
