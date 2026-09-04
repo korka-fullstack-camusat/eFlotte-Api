@@ -40,6 +40,18 @@ def _cd(v):
 
 # ── Filtres disponibles ────────────────────────────────────────────────────────
 
+@router.get("/periodes")
+def get_periodes(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """Retourne la liste des (annee, mois) ayant au moins une ligne, du plus récent au plus ancien."""
+    rows = (
+        db.query(Carburant.annee, Carburant.mois)
+        .distinct()
+        .order_by(Carburant.annee.desc(), Carburant.mois.desc())
+        .all()
+    )
+    return [{"annee": r.annee, "mois": r.mois} for r in rows]
+
+
 @router.get("/filtres")
 def get_filtres(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     def distinct(col):
