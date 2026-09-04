@@ -379,6 +379,9 @@ async def import_carburant(
     carte_col    = _get_col(df, "Numéro(s) carte Total", "NumCarte", "Numéro carte")
     prix_col     = _get_col(df, "PrixUnitaire", "Prix unitaire")
     plein_col    = _get_col(df, "DernierPlein", "Dernier plein")
+    conso_col    = _get_col(df, "Conso/100 recommandée", "Conso/100 distance GPS", "Conso/100")
+    vtype_col    = _get_col(df, "Vehicle Type", "Type véhicule")
+    distreco_col = _get_col(df, "Distance recommandée CO2", "Distance recommandée")
 
     # Clé unique = (matricule, mois, annee)
     existing_map: dict[tuple[str, int, int], Carburant] = {
@@ -414,7 +417,10 @@ async def import_carburant(
                 driver_name     = _cs(row.get(cond_col))   if cond_col  else None,
                 nom_chauffeur   = _cs(row.get(label_col))  if label_col else None,
                 code_projet     = _cs(row.get(bl_col))     if bl_col    else None,
-                num_carte       = _cs(str(int(row.get(carte_col))) if carte_col and not pd.isna(row.get(carte_col)) else row.get(carte_col)) if carte_col else None,
+                num_carte       = (lambda v: _cs(str(int(float(v)))) if v and not pd.isna(v) else None)(row.get(carte_col)) if carte_col else None,
+                conso_100       = _cf(row.get(conso_col))     if conso_col    else None,
+                vehicle_type    = _cs(row.get(vtype_col))     if vtype_col    else None,
+                dist_recommandee = _cf(row.get(distreco_col)) if distreco_col else None,
             )
 
             key = (matr, mois, annee)

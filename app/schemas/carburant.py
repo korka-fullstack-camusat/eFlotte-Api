@@ -18,7 +18,10 @@ class CarburantBase(BaseModel):
     driver_name:     str   | None = None
     nom_chauffeur:   str   | None = None
     code_projet:     str   | None = None
-    num_carte:       str   | None = None
+    num_carte:        str   | None = None
+    conso_100:        float | None = None
+    vehicle_type:     str   | None = None
+    dist_recommandee: float | None = None
 
 
 class CarburantOut(CarburantBase):

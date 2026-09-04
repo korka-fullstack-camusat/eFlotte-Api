@@ -26,3 +26,6 @@ class Carburant(Base):
     nom_chauffeur   = Column(String(500))
     code_projet     = Column(Text)
     num_carte       = Column(String(200))
+    conso_100       = Column(Float)          # Conso/100 recommandée
+    vehicle_type    = Column(String(100))    # Vehicle Type (Light, Truck…)
+    dist_recommandee = Column(Float)         # Distance recommandée CO2
