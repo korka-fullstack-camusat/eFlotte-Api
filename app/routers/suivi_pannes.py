@@ -271,10 +271,11 @@ async def import_recap_pannes(
         s = str(val).strip()
         return s if s and s.lower() not in ("nan", "none", "") else None
 
+    # Clé = préfixe à chercher (mois_str.startswith(k)), valeur = numéro de mois
     MOIS_MAP = {
-        "JANV": 1, "FEVR": 2, "FEVRIER": 2, "MARS": 3, "AVRI": 4, "AVRIL": 4,
+        "JANV": 1, "FEVR": 2, "FEV": 2, "MARS": 3, "AVR": 4,
         "MAI": 5, "JUIN": 6, "JUIL": 7, "AOUT": 8, "SEPT": 9,
-        "OCTO": 10, "NOVE": 11, "DECE": 12,
+        "OCT": 10, "NOV": 11, "DEC": 12,
     }
 
     def _parse_mois_col(col_name: str):
@@ -284,6 +285,7 @@ async def import_recap_pannes(
         if not m:
             return None
         mois_str, annee_str = m.group(1), m.group(2)
+        # Chercher le préfixe le plus long qui matche (évite ambiguïtés)
         mois_num = next((v for k, v in MOIS_MAP.items() if mois_str.startswith(k)), None)
         if not mois_num:
             return None

@@ -1000,9 +1000,9 @@ def _recap_pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
     # Correspondance mois français abrégés → numéro de mois
     MOIS_MAP = {
-        "JANV": 1, "FEVR": 2, "FEVRIER": 2, "MARS": 3, "AVRI": 4, "AVRIL": 4,
+        "JANV": 1, "FEVR": 2, "FEV": 2, "MARS": 3, "AVR": 4,
         "MAI": 5, "JUIN": 6, "JUIL": 7, "AOUT": 8, "SEPT": 9,
-        "OCTO": 10, "NOVE": 11, "DECE": 12,
+        "OCT": 10, "NOV": 11, "DEC": 12,
     }
 
     def _parse_mois_col(col_name: str) -> str | None:
