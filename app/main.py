@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -6,6 +8,18 @@ from .routers import (
     suivi_devis, checklists_vl, suivi_pannes, pneumatiques,
     import_global, suivi_sinistres, carburant,
 )
+
+
+class _HealthCheckFilter(logging.Filter):
+    """Masque /health des logs d'accès (appelé toutes les 10 s par Docker et Render)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        path = str(args[2]).split("?")[0] if isinstance(args, tuple) and len(args) >= 3 else ""
+        return path not in ("/health", "/api/health")
+
+
+logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
 
 app = FastAPI(
     title="eFlotte — Camusat Sénégal",
