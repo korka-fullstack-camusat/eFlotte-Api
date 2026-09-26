@@ -4,11 +4,14 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from ..database import get_db
 from ..models.user import User
-from ..services.auth_service import verify_password, hash_password, create_access_token, get_current_user, require_admin
+from ..services.auth_service import (
+    verify_password, hash_password, create_access_token,
+    get_authenticated_user, get_current_user, require_admin,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["Authentification"])
 
-VALID_ROLES = {"ADMIN", "EDITOR", "VIEWER"}
+VALID_ROLES = {"ADMIN", "EDITOR", "HSE", "VIEWER", "CHAUFFEUR"}
 
 
 # ── Schémas ────────────────────────────────────────────────────────────────
@@ -28,6 +31,7 @@ class UserOut(BaseModel):
     email:     str | None
     is_active: bool
     role:      str = "EDITOR"
+    vehicule_plaque: str | None = None
     model_config = {"from_attributes": True}
 
 
@@ -37,6 +41,7 @@ class UserCreate(BaseModel):
     full_name: str | None = None
     email:     str | None = None
     role:      str = "EDITOR"
+    vehicule_plaque: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -45,6 +50,14 @@ class UserUpdate(BaseModel):
     role:      str | None = None
     is_active: bool | None = None
     password:  str | None = None
+    vehicule_plaque: str | None = None
+
+
+def _vide_en_none(val: str | None) -> str | None:
+    """Le formulaire envoie "" pour un champ laissé vide : sans ça, deux comptes sans
+    email entrent en conflit sur la contrainte d'unicité."""
+    val = (val or "").strip()
+    return val or None
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -65,7 +78,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 
 
 @router.get("/me", response_model=UserOut)
-def me(current_user: User = Depends(get_current_user)):
+def me(current_user: User = Depends(get_authenticated_user)):
     return current_user
 
 
@@ -77,13 +90,18 @@ def create_user(
 ):
     if db.query(User).filter(User.username == data.username).first():
         raise HTTPException(400, "Nom d'utilisateur déjà utilisé")
-    role = data.role if data.role in VALID_ROLES else "EDITOR"
+    if data.role not in VALID_ROLES:
+        raise HTTPException(400, f"Rôle invalide. Valeurs possibles : {', '.join(sorted(VALID_ROLES))}")
+    email = _vide_en_none(data.email)
+    if email and db.query(User).filter(User.email == email).first():
+        raise HTTPException(400, "Email déjà utilisé par un autre compte")
     user = User(
         username=data.username,
-        full_name=data.full_name,
-        email=data.email,
+        full_name=_vide_en_none(data.full_name),
+        email=email,
         hashed_password=hash_password(data.password),
-        role=role,
+        role=data.role,
+        vehicule_plaque=_vide_en_none(data.vehicule_plaque),
     )
     db.add(user); db.commit(); db.refresh(user)
     return user
@@ -107,12 +125,17 @@ def update_user(
 
     if data.role is not None:
         if data.role not in VALID_ROLES:
-            raise HTTPException(400, f"Rôle invalide. Valeurs possibles : {', '.join(VALID_ROLES)}")
+            raise HTTPException(400, f"Rôle invalide. Valeurs possibles : {', '.join(sorted(VALID_ROLES))}")
         user.role = data.role
     if data.full_name is not None:
         user.full_name = data.full_name
     if data.email is not None:
-        user.email = data.email
+        email = _vide_en_none(data.email)
+        if email and db.query(User).filter(User.email == email, User.id != user.id).first():
+            raise HTTPException(400, "Email déjà utilisé par un autre compte")
+        user.email = email
+    if data.vehicule_plaque is not None:
+        user.vehicule_plaque = _vide_en_none(data.vehicule_plaque)
     if data.is_active is not None:
         user.is_active = data.is_active
     if data.password:

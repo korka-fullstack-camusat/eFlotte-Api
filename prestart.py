@@ -9,6 +9,7 @@ from app.models import (  # noqa: F401 — tous importés pour Base.metadata.cre
     User, Vehicule, CoutFlotte, EntretienVehicule, EntretienBis,
     MissionChauffeur, SuiviDevis, CheckListVL, SuiviPanne,
     Pneumatique, SuiviSinistre, ImportGlobalLog, Carburant, RecapPanneVehicule,
+    RapportInspection, PhotoInspection, RelanceChecklist,
 )
 from app.services.auth_service import hash_password
 
@@ -91,6 +92,11 @@ with engine.begin() as conn:
     conn.execute(sqlalchemy.text("""
         ALTER TABLE recap_pannes_vehicules
             ADD COLUMN IF NOT EXISTS sorti BOOLEAN NOT NULL DEFAULT FALSE
+    """))
+    # User — véhicule attribué (rôle CHAUFFEUR)
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE users
+            ADD COLUMN IF NOT EXISTS vehicule_plaque VARCHAR(30)
     """))
 print("✓ Colonnes à jour.")
 
