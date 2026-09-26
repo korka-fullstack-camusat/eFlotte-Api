@@ -16,3 +16,5 @@ class User(Base):
     role            = Column(String(20), nullable=False, default="EDITOR")
     # Véhicule attribué (CHAUFFEUR) — plaque plutôt que clé étrangère pour survivre aux réimports de la flotte
     vehicule_plaque = Column(String(30), nullable=True)
+    # Filiale du chauffeur : saisie une seule fois, reprise dans chaque rapport
+    filiale         = Column(String(150), nullable=True)

@@ -33,6 +33,7 @@ class UserOut(BaseModel):
     is_active: bool
     role:      str = "EDITOR"
     vehicule_plaque: str | None = None
+    filiale:   str | None = None
     model_config = {"from_attributes": True}
 
 
@@ -43,6 +44,7 @@ class UserCreate(BaseModel):
     email:     str | None = None
     role:      str = "EDITOR"
     vehicule_plaque: str | None = None
+    filiale:   str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -52,6 +54,7 @@ class UserUpdate(BaseModel):
     is_active: bool | None = None
     password:  str | None = None
     vehicule_plaque: str | None = None
+    filiale:   str | None = None
 
 
 class ChangementMotDePasse(BaseModel):
@@ -132,6 +135,7 @@ def create_user(
         hashed_password=hash_password(data.password),
         role=data.role,
         vehicule_plaque=_vide_en_none(data.vehicule_plaque),
+        filiale=_vide_en_none(data.filiale),
     )
     db.add(user); db.commit(); db.refresh(user)
     return user
@@ -166,6 +170,8 @@ def update_user(
         user.email = email
     if data.vehicule_plaque is not None:
         user.vehicule_plaque = _vide_en_none(data.vehicule_plaque)
+    if data.filiale is not None:
+        user.filiale = _vide_en_none(data.filiale)
     if data.is_active is not None:
         user.is_active = data.is_active
     if data.password:

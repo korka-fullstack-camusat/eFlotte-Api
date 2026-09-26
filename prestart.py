@@ -96,7 +96,8 @@ with engine.begin() as conn:
     # User — véhicule attribué (rôle CHAUFFEUR)
     conn.execute(sqlalchemy.text("""
         ALTER TABLE users
-            ADD COLUMN IF NOT EXISTS vehicule_plaque VARCHAR(30)
+            ADD COLUMN IF NOT EXISTS vehicule_plaque VARCHAR(30),
+            ADD COLUMN IF NOT EXISTS filiale VARCHAR(150)
     """))
 print("✓ Colonnes à jour.")
 

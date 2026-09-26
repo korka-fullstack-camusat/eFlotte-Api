@@ -87,6 +87,7 @@ class MonEspace(BaseModel):
     nb_rapports: int
     vehicule: VehiculeMini | None
     vehicule_plaque: str | None
+    filiale: str | None
     envoye_cette_semaine: bool
     dernier_rapport: RapportResume | None
     derniers_rapports: list[RapportResume]
@@ -256,6 +257,8 @@ def mon_espace(db: Session = Depends(get_db), user: User = Depends(require_chauf
         nb_rapports=mes.count(),
         vehicule=_avec_visite(vehicule, _visites_techniques(db, [vehicule.plaque_immatriculation])) if vehicule else None,
         vehicule_plaque=user.vehicule_plaque,
+        # Anciens comptes : reprendre la filiale saisie dans leurs rapports précédents
+        filiale=user.filiale or (derniers[0].filiale if derniers else None),
         envoye_cette_semaine=mes.filter(RapportInspection.date_rapport >= _debut_semaine()).count() > 0,
         dernier_rapport=derniers[0] if derniers else None,
         derniers_rapports=derniers,
@@ -311,7 +314,9 @@ async def envoyer_rapport(
     if type_rapport not in TYPES_RAPPORT:
         raise HTTPException(400, "Type de rapport invalide")
 
-    plaque = str(payload.get("immatriculation") or "").strip()
+    # Le véhicule est celui du compte. S'il n'y en a pas encore, celui choisi
+    # dans ce premier rapport est enregistré sur le compte pour les suivants.
+    plaque = user.vehicule_plaque or str(payload.get("immatriculation") or "").strip()
     vehicule = _vehicule_mini(db, plaque)
     if not vehicule:
         raise HTTPException(400, "Véhicule introuvable dans la flotte")
@@ -359,10 +364,21 @@ async def envoyer_rapport(
             raise HTTPException(400, f"La photo « {position} » dépasse 5 Mo")
         contenus[position] = (fichier.content_type, contenu)
 
-    dernier = (
-        db.query(RapportInspection).filter(RapportInspection.user_id == user.id)
+    # Filiale : celle du compte ; sinon saisie une fois ici et enregistrée sur le compte
+    precedent = (
+        db.query(RapportInspection.filiale)
+        .filter(RapportInspection.user_id == user.id, RapportInspection.filiale.isnot(None))
         .order_by(RapportInspection.created_at.desc()).first()
     )
+    filiale = (
+        user.filiale or (payload.get("filiale") or "").strip()[:150]
+        or (precedent[0] if precedent else None) or None
+    )
+    if not user.filiale and filiale:
+        user.filiale = filiale
+    if not user.vehicule_plaque:
+        user.vehicule_plaque = vehicule.plaque_immatriculation
+
     rapport = RapportInspection(
         user_id=user.id,
         type_rapport=type_rapport,
@@ -370,7 +386,7 @@ async def envoyer_rapport(
         immatriculation=vehicule.plaque_immatriculation,
         marque=vehicule.marque,
         modele=vehicule.modele,
-        filiale=(payload.get("filiale") or "").strip()[:150] or (dernier.filiale if dernier else None),
+        filiale=filiale,
         nom_chauffeur=user.full_name or user.username,
         kilometrage=kilometrage,
         visite_technique=visite_technique,
