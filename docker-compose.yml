@@ -1,6 +1,33 @@
+# Stack complète eFlotte : PostgreSQL + API + Front
+#
+#   docker compose up --build
+#
+#   Front   → http://localhost:5175   (admin / admin123)
+#   API     → http://localhost:8050/docs
+#   Postgres→ localhost:5435 (flotte_user / FlottePass2025, base eflotte)
+#
+# Le front est construit depuis ../eFlotte-Front (les deux dépôts clonés côte
+# à côte). Autre emplacement : FRONT_PATH=/chemin/vers/eFlotte-Front docker compose up
+
 name: eflotte
 
 services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: flotte_user
+      POSTGRES_PASSWORD: FlottePass2025
+      POSTGRES_DB: eflotte
+    ports:
+      - "5435:5432"
+    volumes:
+      - eflotte-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flotte_user -d eflotte"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   web:
     build: .
     command: >
@@ -18,7 +45,24 @@ services:
       - .:/app
     ports:
       - "8050:8050"
-    env_file:
-      - .env
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    environment:
+      DATABASE_URL: postgresql://flotte_user:FlottePass2025@db:5432/eflotte
+      SECRET_KEY: ${SECRET_KEY:-changeme-secret-key-eflotte}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  front:
+    build: ${FRONT_PATH:-../eFlotte-Front}
+    ports:
+      - "5175:5175"
+    environment:
+      VITE_PROXY_TARGET: http://web:8050
+    volumes:
+      - ${FRONT_PATH:-../eFlotte-Front}:/app
+      - /app/node_modules
+    depends_on:
+      - web
+
+volumes:
+  eflotte-db-data:
