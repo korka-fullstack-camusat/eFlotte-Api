@@ -1,13 +1,11 @@
-# Stack complète eFlotte : PostgreSQL + API + Front
+# Backend eFlotte : PostgreSQL + API
 #
 #   docker compose up --build
 #
-#   Front   → http://localhost:5175   (admin / admin123)
-#   API     → http://localhost:8050/docs
-#   Postgres→ localhost:5435 (flotte_user / FlottePass2025, base eflotte)
+#   API      → http://localhost:8050/docs   (admin / admin123)
+#   Postgres → localhost:5435 (flotte_user / FlottePass2025, base eflotte)
 #
-# Le front est construit depuis ../eFlotte-Front (les deux dépôts clonés côte
-# à côte). Autre emplacement : FRONT_PATH=/chemin/vers/eFlotte-Front docker compose up
+# Le front a son propre docker-compose.yml dans le dépôt eFlotte-Front.
 
 name: eflotte
 
@@ -51,18 +49,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-
-  front:
-    build: ${FRONT_PATH:-../eFlotte-Front}
-    ports:
-      - "5175:5175"
-    environment:
-      VITE_PROXY_TARGET: http://web:8050
-    volumes:
-      - ${FRONT_PATH:-../eFlotte-Front}:/app
-      - /app/node_modules
-    depends_on:
-      - web
 
 volumes:
   eflotte-db-data:
