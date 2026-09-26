@@ -1,0 +1,28 @@
+# SITE_ADDRESS (dans .env) :
+#   :80                    → accès par l'adresse IP, en HTTP
+#   eflotte.mondomaine.com → HTTPS automatique (Let's Encrypt), DNS pointant vers l'EC2
+{$SITE_ADDRESS::80} {
+	encode gzip
+
+	# 6 photos (jusqu'à 5 Mo chacune) + données du rapport
+	request_body {
+		max_size 40MB
+	}
+
+	# API et sa documentation
+	@api path /api/* /docs /docs/* /openapi.json /health
+	handle @api {
+		reverse_proxy web:8050
+	}
+
+	# Site (front React servi par le conteneur eflotte-front)
+	handle {
+		reverse_proxy front:80
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

@@ -1,0 +1,87 @@
+# Backend eFlotte — PRODUCTION (EC2) : PostgreSQL + API + Caddy (HTTPS)
+#
+#   cp .env.example .env      (une fois, puis mots de passe forts + SITE_ADDRESS)
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Puis dans eFlotte-Front : docker compose -f docker-compose.prod.yml up -d --build
+#
+# Seuls 80 et 443 sont ouverts. La base n'écoute que sur 127.0.0.1 (accès par
+# tunnel SSH), l'API n'est joignable que via Caddy sur /api.
+
+name: eflotte
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: eflotte-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?Définir POSTGRES_USER dans .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Définir POSTGRES_DB dans .env}
+    ports:
+      - "127.0.0.1:${DB_PORT:-5435}:5432"
+    volumes:
+      - eflotte-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks: [eflotte]
+
+  web:
+    build: .
+    container_name: eflotte-api
+    restart: unless-stopped
+    command: >
+      sh -c "python prestart.py &&
+      gunicorn app.main:app
+      --worker-class uvicorn.workers.UvicornWorker
+      --bind 0.0.0.0:8050
+      --workers 2
+      --timeout 300
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --log-level info"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY:?Définir SECRET_KEY dans .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8050/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks: [eflotte]
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: eflotte-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # ":80" = accès par l'IP en HTTP ; un nom de domaine = HTTPS automatique
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+    networks: [eflotte]
+
+volumes:
+  eflotte-db-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  eflotte:
+    name: eflotte
