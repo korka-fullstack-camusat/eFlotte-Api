@@ -15,6 +15,8 @@ name: eflotte
 services:
   db:
     image: postgres:16-alpine
+    container_name: eflotte-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?Définir POSTGRES_USER dans .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
@@ -31,6 +33,8 @@ services:
 
   web:
     build: .
+    container_name: eflotte-api
+    restart: unless-stopped
     command: >
       sh -c "python prestart.py &&
       gunicorn app.main:app
@@ -52,6 +56,12 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8050/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   eflotte-db-data:
