@@ -1,9 +1,12 @@
 # Backend eFlotte : PostgreSQL + API
 #
+#   cp .env.example .env      (une seule fois, puis adapter les valeurs)
 #   docker compose up --build
 #
-#   API      → http://localhost:8050/docs   (admin / admin123)
-#   Postgres → localhost:5435 (flotte_user / FlottePass2025, base eflotte)
+#   API      → http://localhost:${API_PORT}/docs   (admin / admin123)
+#   Postgres → localhost:${DB_PORT}
+#
+# Toutes les valeurs viennent du fichier .env (voir .env.example).
 #
 # Le front a son propre docker-compose.yml dans le dépôt eFlotte-Front.
 
@@ -13,15 +16,15 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: flotte_user
-      POSTGRES_PASSWORD: FlottePass2025
-      POSTGRES_DB: eflotte
+      POSTGRES_USER: ${POSTGRES_USER:?Définir POSTGRES_USER dans .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Définir POSTGRES_PASSWORD dans .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Définir POSTGRES_DB dans .env}
     ports:
-      - "5435:5432"
+      - "${DB_PORT:-5435}:5432"
     volumes:
       - eflotte-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flotte_user -d eflotte"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -42,10 +45,10 @@ services:
     volumes:
       - .:/app
     ports:
-      - "8050:8050"
+      - "${API_PORT:-8050}:8050"
     environment:
-      DATABASE_URL: postgresql://flotte_user:FlottePass2025@db:5432/eflotte
-      SECRET_KEY: ${SECRET_KEY:-changeme-secret-key-eflotte}
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SECRET_KEY: ${SECRET_KEY:?Définir SECRET_KEY dans .env}
     depends_on:
       db:
         condition: service_healthy
