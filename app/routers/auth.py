@@ -54,6 +54,11 @@ class UserUpdate(BaseModel):
     vehicule_plaque: str | None = None
 
 
+class ChangementMotDePasse(BaseModel):
+    ancien: str
+    nouveau: str
+
+
 def _vide_en_none(val: str | None) -> str | None:
     """Le formulaire envoie "" pour un champ laissé vide : sans ça, deux comptes sans
     email entrent en conflit sur la contrainte d'unicité."""
@@ -87,6 +92,21 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 @router.get("/me", response_model=UserOut)
 def me(current_user: User = Depends(get_authenticated_user)):
     return current_user
+
+
+@router.post("/me/mot-de-passe", status_code=204)
+def changer_mot_de_passe(
+    data: ChangementMotDePasse,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_authenticated_user),
+):
+    """Chaque utilisateur (chauffeur compris) change son propre mot de passe."""
+    if not verify_password(data.ancien, current_user.hashed_password):
+        raise HTTPException(400, "Mot de passe actuel incorrect")
+    if len(data.nouveau) < 6:
+        raise HTTPException(400, "Le nouveau mot de passe doit contenir au moins 6 caractères")
+    current_user.hashed_password = hash_password(data.nouveau)
+    db.commit()
 
 
 @router.post("/users", response_model=UserOut, status_code=201)

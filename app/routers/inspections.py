@@ -74,12 +74,17 @@ class VehiculeMini(BaseModel):
     plaque_immatriculation: str
     marque: str | None
     modele: str | None
+    kilometrage: int | None = None
+    # Dernière date de visite technique connue (relevée dans un rapport précédent)
+    visite_technique: date | None = None
     model_config = {"from_attributes": True}
 
 
 class MonEspace(BaseModel):
     username: str
     full_name: str | None
+    email: str | None
+    nb_rapports: int
     vehicule: VehiculeMini | None
     vehicule_plaque: str | None
     envoye_cette_semaine: bool
@@ -154,6 +159,23 @@ def _vehicule_mini(db: Session, plaque: str | None) -> Vehicule | None:
     return db.query(Vehicule).filter(Vehicule.plaque_immatriculation == plaque).first()
 
 
+def _visites_techniques(db: Session, plaques: list[str] | None = None) -> dict[str, date]:
+    """Dernière date de visite technique relevée par plaque."""
+    q = (
+        db.query(RapportInspection.immatriculation, func.max(RapportInspection.visite_technique))
+        .filter(RapportInspection.visite_technique.isnot(None))
+    )
+    if plaques is not None:
+        q = q.filter(RapportInspection.immatriculation.in_(plaques))
+    return dict(q.group_by(RapportInspection.immatriculation).all())
+
+
+def _avec_visite(v: Vehicule, visites: dict[str, date]) -> VehiculeMini:
+    mini = VehiculeMini.model_validate(v, from_attributes=True)
+    mini.visite_technique = visites.get(v.plaque_immatriculation)
+    return mini
+
+
 def _detail(db: Session, rapport: RapportInspection) -> RapportDetail:
     positions = [
         p for (p,) in db.query(PhotoInspection.position).filter(PhotoInspection.rapport_id == rapport.id).all()
@@ -226,10 +248,13 @@ def mon_espace(db: Session = Depends(get_db), user: User = Depends(require_chauf
         .order_by(RelanceChecklist.created_at.desc())
         .all()
     )
+    vehicule = _vehicule_mini(db, user.vehicule_plaque)
     return MonEspace(
         username=user.username,
         full_name=user.full_name,
-        vehicule=_vehicule_mini(db, user.vehicule_plaque),
+        email=user.email,
+        nb_rapports=mes.count(),
+        vehicule=_avec_visite(vehicule, _visites_techniques(db, [vehicule.plaque_immatriculation])) if vehicule else None,
         vehicule_plaque=user.vehicule_plaque,
         envoye_cette_semaine=mes.filter(RapportInspection.date_rapport >= _debut_semaine()).count() > 0,
         dernier_rapport=derniers[0] if derniers else None,
@@ -242,7 +267,8 @@ def mon_espace(db: Session = Depends(get_db), user: User = Depends(require_chauf
 @router.get("/vehicules", response_model=list[VehiculeMini])
 def vehicules_disponibles(db: Session = Depends(get_db), _: User = Depends(require_chauffeur)):
     """Liste réduite de la flotte pour choisir un autre véhicule que celui attribué."""
-    return db.query(Vehicule).order_by(Vehicule.plaque_immatriculation).all()
+    visites = _visites_techniques(db)
+    return [_avec_visite(v, visites) for v in db.query(Vehicule).order_by(Vehicule.plaque_immatriculation).all()]
 
 
 @router.get("/mes-rapports", response_model=RapportPage)
@@ -302,6 +328,9 @@ async def envoyer_rapport(
             visite_technique = date.fromisoformat(payload["visite_technique"])
         except ValueError:
             raise HTTPException(400, "Date de visite technique invalide")
+    else:
+        # Déjà connue : le formulaire ne la redemande pas, on reprend la dernière relevée
+        visite_technique = _visites_techniques(db, [vehicule.plaque_immatriculation]).get(vehicule.plaque_immatriculation)
 
     try:
         reponses, nb_nc, nb_crit = valider_reponses(payload.get("reponses") or {})
@@ -330,6 +359,10 @@ async def envoyer_rapport(
             raise HTTPException(400, f"La photo « {position} » dépasse 5 Mo")
         contenus[position] = (fichier.content_type, contenu)
 
+    dernier = (
+        db.query(RapportInspection).filter(RapportInspection.user_id == user.id)
+        .order_by(RapportInspection.created_at.desc()).first()
+    )
     rapport = RapportInspection(
         user_id=user.id,
         type_rapport=type_rapport,
@@ -337,7 +370,7 @@ async def envoyer_rapport(
         immatriculation=vehicule.plaque_immatriculation,
         marque=vehicule.marque,
         modele=vehicule.modele,
-        filiale=(payload.get("filiale") or "").strip()[:150] or None,
+        filiale=(payload.get("filiale") or "").strip()[:150] or (dernier.filiale if dernier else None),
         nom_chauffeur=user.full_name or user.username,
         kilometrage=kilometrage,
         visite_technique=visite_technique,
