@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from sqlalchemy import func
 from ..database import get_db
 from ..models.user import User
 from ..services.auth_service import (
@@ -64,7 +65,13 @@ def _vide_en_none(val: str | None) -> str | None:
 
 @router.post("/login", response_model=TokenResponse)
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == form.username).first()
+    # Sur téléphone, le clavier ajoute souvent une majuscule ou un espace final :
+    # correspondance exacte d'abord, sinon sans tenir compte de la casse (si un seul compte correspond).
+    username = form.username.strip()
+    user = db.query(User).filter(User.username == username).first()
+    if not user:
+        candidats = db.query(User).filter(func.lower(User.username) == username.lower()).limit(2).all()
+        user = candidats[0] if len(candidats) == 1 else None
     if not user or not verify_password(form.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -88,7 +95,10 @@ def create_user(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
-    if db.query(User).filter(User.username == data.username).first():
+    data.username = data.username.strip()
+    if not data.username:
+        raise HTTPException(400, "Nom d'utilisateur obligatoire")
+    if db.query(User).filter(func.lower(User.username) == data.username.lower()).first():
         raise HTTPException(400, "Nom d'utilisateur déjà utilisé")
     if data.role not in VALID_ROLES:
         raise HTTPException(400, f"Rôle invalide. Valeurs possibles : {', '.join(sorted(VALID_ROLES))}")
