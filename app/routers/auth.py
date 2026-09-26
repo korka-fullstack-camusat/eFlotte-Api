@@ -125,6 +125,8 @@ def create_user(
         raise HTTPException(400, "Nom d'utilisateur déjà utilisé")
     if data.role not in VALID_ROLES:
         raise HTTPException(400, f"Rôle invalide. Valeurs possibles : {', '.join(sorted(VALID_ROLES))}")
+    if data.role == "CHAUFFEUR" and not _vide_en_none(data.filiale):
+        raise HTTPException(400, "La filiale est obligatoire pour un compte chauffeur")
     email = _vide_en_none(data.email)
     if email and db.query(User).filter(User.email == email).first():
         raise HTTPException(400, "Email déjà utilisé par un autre compte")
@@ -172,6 +174,8 @@ def update_user(
         user.vehicule_plaque = _vide_en_none(data.vehicule_plaque)
     if data.filiale is not None:
         user.filiale = _vide_en_none(data.filiale)
+    if user.role == "CHAUFFEUR" and not user.filiale:
+        raise HTTPException(400, "La filiale est obligatoire pour un compte chauffeur")
     if data.is_active is not None:
         user.is_active = data.is_active
     if data.password:

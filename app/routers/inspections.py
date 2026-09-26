@@ -364,18 +364,14 @@ async def envoyer_rapport(
             raise HTTPException(400, f"La photo « {position} » dépasse 5 Mo")
         contenus[position] = (fichier.content_type, contenu)
 
-    # Filiale : celle du compte ; sinon saisie une fois ici et enregistrée sur le compte
+    # Filiale : celle du compte (saisie par l'admin à la création).
+    # Anciens comptes sans filiale : celle de leur dernier rapport.
     precedent = (
         db.query(RapportInspection.filiale)
         .filter(RapportInspection.user_id == user.id, RapportInspection.filiale.isnot(None))
         .order_by(RapportInspection.created_at.desc()).first()
     )
-    filiale = (
-        user.filiale or (payload.get("filiale") or "").strip()[:150]
-        or (precedent[0] if precedent else None) or None
-    )
-    if not user.filiale and filiale:
-        user.filiale = filiale
+    filiale = user.filiale or (precedent[0] if precedent else None)
     if not user.vehicule_plaque:
         user.vehicule_plaque = vehicule.plaque_immatriculation
 
