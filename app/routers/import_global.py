@@ -3,8 +3,7 @@ Import global — lit le fichier Excel une seule fois et alimente
 automatiquement toutes les rubriques de l'application.
 """
 import io
-import re
-from datetime import date as DateType, datetime
+from datetime import date as DateType
 
 import pandas as pd
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
@@ -28,6 +27,7 @@ from ..models.suivi_sinistre import SuiviSinistre
 from ..models.carburant import Carburant
 from ..models.recap_panne import RecapPanneVehicule
 from ..services.auth_service import get_current_user, require_editor
+from ..services.carburant_excel import feuille_carburant, importer_carburant
 
 router = APIRouter(prefix="/api/import-global", tags=["Import global"])
 
@@ -102,31 +102,6 @@ def _cf(v) -> float | None:
         return float(v)
     except Exception:
         return None
-
-
-_MOIS_NOMS = {"JAN": 1, "FEV": 2, "FÉV": 2, "FEB": 2, "MAR": 3, "AVR": 4, "APR": 4, "MAI": 5, "MAY": 5,
-              "JUIN": 6, "JUN": 6, "JUIL": 7, "JUL": 7, "AOU": 8, "AOÛ": 8, "AUG": 8, "SEP": 9,
-              "OCT": 10, "NOV": 11, "DEC": 12, "DÉC": 12}
-
-
-def _mois_depuis(v) -> int | None:
-    """Mois (1-12) depuis une date, « 2026-03 », « 03/2026 », « 3 » ou « Mars »."""
-    if v is None or (isinstance(v, float) and pd.isna(v)):
-        return None
-    if isinstance(v, (pd.Timestamp, datetime, DateType)):
-        return v.month
-    t = str(v).strip().upper()
-    m = re.match(r"^(\d{4})[-/](\d{1,2})", t) or re.match(r"^(\d{1,2})[-/](\d{4})", t)
-    if m:
-        n = int(m.group(2) if len(m.group(1)) == 4 else m.group(1))
-        return n if 1 <= n <= 12 else None
-    if t.replace(".0", "").isdigit():
-        n = int(float(t))
-        return n if 1 <= n <= 12 else None
-    for nom in sorted(_MOIS_NOMS, key=len, reverse=True):
-        if t.startswith(nom):
-            return _MOIS_NOMS[nom]
-    return None
 
 
 def _find_col(columns: list[str], *keywords: str) -> str | None:
@@ -927,90 +902,18 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
 
 def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
-    r = SectionResult()
-    sheet = next((s for s in xls.sheet_names if "CARBURANT" in s.strip().upper()), None)
-    if not sheet:
-        r.skipped = True; r.skip_reason = "Feuille CARBURANT introuvable"; return r
-
-    try:
-        df = xls.parse(sheet, header=0)
-        df.columns = [str(c).strip() for c in df.columns]
-    except Exception as e:
-        r.skipped = True; r.skip_reason = str(e); return r
-
-    # Colonne type carburant sans entête (Unnamed: 5 typiquement)
-    type_col = next(
-        (c for c in df.columns if "Unnamed" in c or c.upper() in ("TYPE", "CARBURANT", "TYPE CARBURANT")),
-        None,
-    )
-
-    # Fichier annuel : une ligne par véhicule et par mois. Mois lu dans « Période » /
-    # « Mois », sinon déduit du dernier plein. Toute l'année du fichier est remplacée.
-    col_periode = _find_col(list(df.columns), "PERIODE", "PÉRIODE", "MOIS")
-    annee = annee_par_defaut()
-
-    def mois_ligne(row) -> int | None:
-        m = _mois_depuis(row.get(col_periode)) if col_periode else None
-        if not m:
-            plein = _cd(row.get("DernierPlein"))
-            m = plein.month if plein else None
-        return m
-
-    if any(_cs(row.get("Matricule")) and mois_ligne(row) for _, row in df.iterrows()):
-        remplacer_annee(db, Carburant, annee)
-    existing_map: dict[tuple[str, int], Carburant] = {}
-
-    for idx, row in df.iterrows():
-        try:
-            matr = _cs(row.get("Matricule"))
-            if not matr:
-                continue
-            if any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
-                continue
-            mois = mois_ligne(row)
-            if not mois:
-                r.errors.append({"ligne": int(idx) + 2, "message": f"{matr} : mois introuvable (Période, Mois ou DernierPlein)"})
-                continue
-
-            type_carb = None
-            if type_col:
-                raw = _cs(row.get(type_col))
-                if raw and raw.upper() in ("GAZOIL", "ESSENCE"):
-                    type_carb = raw.upper()
-
-            vals = dict(
-                matricule       = matr,
-                mois            = mois,
-                annee           = annee,
-                quantite_totale = _cf(row.get("QuantiteTotale")),
-                montant_total   = _cf(row.get("MontantTotal")),
-                mt_ht           = _cf(row.get("Mt HT")),
-                prix_unitaire   = _cf(row.get("PrixUnitaire")),
-                type_carburant  = type_carb,
-                distance_totale = _cf(row.get("DistanceTotale")),
-                distance_gps    = _cf(row.get("Distance GPS")),
-                car_group       = _cs(row.get("CarGroup")),
-                dernier_plein   = _cd(row.get("DernierPlein")),
-                driver_name     = _cs(row.get("DriverName")),
-                nom_chauffeur   = _cs(row.get("Nom de chauffeur")),
-                code_projet     = _cs(row.get("CodeProjet")),
-                num_carte       = _cs(row.get("NumCarte")),
-            )
-            existing = existing_map.get((matr, mois))
-            if existing:
-                for k, v in vals.items():
-                    setattr(existing, k, v)
-                r.updated += 1
-            else:
-                new_c = Carburant(**vals)
-                db.add(new_c)
-                existing_map[(matr, mois)] = new_c
-                r.created += 1
-        except Exception as e:
-            r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
-
+    """Feuille CARBURANT du tableau de bord annuel : l'année choisie est remplacée,
+    le mois de chaque ligne est lu dans le fichier (voir services/carburant_excel)."""
+    if not feuille_carburant(xls):
+        return SectionResult(skipped=True, skip_reason="Feuille CARBURANT introuvable")
+    res = importer_carburant(db, xls, annee_par_defaut())
+    errors = list(res["errors"])
+    if res["hors_annee"]:
+        errors.append({"ligne": 0, "message": f"{res['hors_annee']} ligne(s) d'une autre année ignorée(s)"})
+    if not res["mois"]:
+        return SectionResult(errors=errors, skipped=True, skip_reason="Aucune ligne carburant exploitable : rien n'a été modifié")
     db.commit()
-    return r
+    return SectionResult(created=res["created"], updated=res["updated"], errors=errors)
 
 
 def _recap_pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
