@@ -88,7 +88,9 @@ def _cd(v) -> DateType | None:
     """Clean date."""
     if pd.isna(v): return None
     try:
-        return pd.to_datetime(v, dayfirst=True).date()
+        # « 2026-04-12 » (ISO) se lit année-mois-jour ; « 12/04/2026 » jour en premier
+        iso = isinstance(v, str) and len(v.strip()) >= 8 and v.strip()[:4].isdigit()
+        return pd.to_datetime(v, dayfirst=not iso).date()
     except Exception:
         return None
 
@@ -943,24 +945,20 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
     )
 
     # Fichier annuel : une ligne par véhicule et par mois. Mois lu dans « Période » /
-    # « Mois », sinon déduit du dernier plein. Seuls les mois présents sont remplacés
-    # (les imports mensuels de la page Carburant des autres mois sont conservés).
+    # « Mois », sinon déduit du dernier plein. Toute l'année du fichier est remplacée.
     col_periode = _find_col(list(df.columns), "PERIODE", "PÉRIODE", "MOIS")
     annee = annee_par_defaut()
 
-    def mois_ligne(row) -> int:
+    def mois_ligne(row) -> int | None:
         m = _mois_depuis(row.get(col_periode)) if col_periode else None
         if not m:
             plein = _cd(row.get("DernierPlein"))
             m = plein.month if plein else None
-        return m or 1
+        return m
 
-    mois_fichier = {mois_ligne(row) for _, row in df.iterrows() if _cs(row.get("Matricule"))}
-    if mois_fichier:
-        db.query(Carburant).filter(Carburant.annee == annee, Carburant.mois.in_(mois_fichier)).delete(synchronize_session=False)
-    existing_map: dict[tuple[str, int], Carburant] = {
-        (c.matricule, c.mois): c for c in db.query(Carburant).filter(Carburant.annee == annee).all()
-    }
+    if any(_cs(row.get("Matricule")) and mois_ligne(row) for _, row in df.iterrows()):
+        remplacer_annee(db, Carburant, annee)
+    existing_map: dict[tuple[str, int], Carburant] = {}
 
     for idx, row in df.iterrows():
         try:
@@ -970,6 +968,9 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
             if any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
                 continue
             mois = mois_ligne(row)
+            if not mois:
+                r.errors.append({"ligne": int(idx) + 2, "message": f"{matr} : mois introuvable (Période, Mois ou DernierPlein)"})
+                continue
 
             type_carb = None
             if type_col:

@@ -70,5 +70,7 @@ class ImportCarburantResult(BaseModel):
     created:       int
     updated:       int
     errors:        list[dict]
-    mois_detecte:  int  # mois réellement utilisé (1–12), auto-détecté ou forcé
-    annee_detecte: int  # année réellement utilisée
+    mois_detecte:  int  # dernier mois présent dans le fichier (1–12)
+    annee_detecte: int  # année choisie à l'import
+    mois_importes: list[int] = []  # mois présents dans le fichier
+    hors_annee:    int = 0         # lignes d'une autre année, ignorées

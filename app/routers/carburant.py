@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from ..database import get_db
-from ..annee import annee_courante
+from ..annee import annee_courante, remplacer_annee
 from ..models.carburant import Carburant
 from ..models.user import User
 from ..schemas.carburant import CarburantBase, CarburantOut, CarburantPage, CarburantStats, CarburantUpdate, ImportCarburantResult
@@ -34,7 +34,9 @@ def _cd(v):
     if pd.isna(v):
         return None
     try:
-        return pd.to_datetime(v, dayfirst=True).date()
+        # « 2026-04-12 » (ISO) se lit année-mois-jour ; « 12/04/2026 » jour en premier
+        iso = isinstance(v, str) and len(v.strip()) >= 8 and v.strip()[:4].isdigit()
+        return pd.to_datetime(v, dayfirst=not iso).date()
     except Exception:
         return None
 
@@ -226,88 +228,9 @@ def update_carburant(
     return item
 
 
-# ── Noms de mois pour la détection automatique ────────────────────────────────
-
-_MOIS_FR = {
-    "JANVIER": 1, "FEVRIER": 2, "FÉVRIER": 2, "MARS": 3, "AVRIL": 4,
-    "MAI": 5, "JUIN": 6, "JUILLET": 7, "AOUT": 8, "AOÛT": 8,
-    "SEPTEMBRE": 9, "OCTOBRE": 10, "NOVEMBRE": 11, "DECEMBRE": 12, "DÉCEMBRE": 12,
-    "JAN": 1, "FEV": 2, "FÉV": 2, "MAR": 3, "AVR": 4,
-    "JUI": 6, "JUL": 7, "AOU": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12, "DÉC": 12,
-}
-
-
-def _detect_mois(filename: str, xls: pd.ExcelFile, sheet_name: str) -> int | None:
-    """Essaie de détecter le mois depuis le nom de fichier ou la feuille Excel."""
-    import re
-
-    # 1. Cherche dans le nom du fichier
-    name_upper = filename.upper().replace("_", " ").replace("-", " ")
-    for token in re.split(r"[\s\.]+", name_upper):
-        if token in _MOIS_FR:
-            return _MOIS_FR[token]
-
-    # 2. Cherche dans le nom de la feuille
-    sheet_upper = sheet_name.upper().replace("_", " ").replace("-", " ")
-    for token in re.split(r"[\s\.]+", sheet_upper):
-        if token in _MOIS_FR:
-            return _MOIS_FR[token]
-
-    # 3. Cherche dans les 5 premières lignes des premières colonnes
-    try:
-        df_head = xls.parse(sheet_name, header=None, nrows=5)
-        for row in df_head.itertuples(index=False):
-            for cell in row:
-                if pd.isna(cell):
-                    continue
-                for token in re.split(r"[\s/\-_\.]+", str(cell).upper()):
-                    if token in _MOIS_FR:
-                        return _MOIS_FR[token]
-    except Exception:
-        pass
-
-    # 4. Cherche dans la colonne DernierPlein — mois le plus fréquent
-    try:
-        df_sample = xls.parse(sheet_name, header=0)
-        df_sample.columns = [str(c).strip() for c in df_sample.columns]
-        col = next((c for c in df_sample.columns if "DERNIER" in c.upper() or "PLEIN" in c.upper()), None)
-        if col:
-            dates = pd.to_datetime(df_sample[col], errors="coerce", dayfirst=True).dropna()
-            if not dates.empty:
-                return int(dates.dt.month.mode()[0])
-    except Exception:
-        pass
-
-    return None
-
-
 # ── Import Excel ───────────────────────────────────────────────────────────────
 
 import datetime as _dt
-
-def _detect_annee(filename: str, xls: pd.ExcelFile, sheet_name: str) -> int | None:
-    import re
-    current_year = _dt.date.today().year
-    valid = range(2015, current_year + 2)
-    for src in [filename, sheet_name]:
-        for m in re.findall(r"\b(20\d{2})\b", src):
-            y = int(m)
-            if y in valid:
-                return y
-    try:
-        df_head = xls.parse(sheet_name, header=None, nrows=5)
-        for row in df_head.itertuples(index=False):
-            for cell in row:
-                if pd.isna(cell):
-                    continue
-                for m in re.findall(r"\b(20\d{2})\b", str(cell)):
-                    y = int(m)
-                    if y in valid:
-                        return y
-    except Exception:
-        pass
-    return None
-
 
 def _get_col(df: pd.DataFrame, *names: str) -> str | None:
     """Retourne le premier nom de colonne présent dans df."""
@@ -331,12 +254,12 @@ def _fuel_type(v) -> str | None:
 @router.post("/import", response_model=ImportCarburantResult)
 async def import_carburant(
     file: UploadFile = File(...),
-    mois:  int = Query(1,                              ge=1, le=12, description="Mois de l'import (1=Janvier … 12=Décembre)"),
-    annee: int = Query(_dt.date.today().year,          ge=2015, le=2100, description="Année de l'import"),
+    annee: int = Query(_dt.date.today().year, ge=2015, le=2100, description="Année du fichier (fichier annuel)"),
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
     import re
+    from .import_global import _mois_depuis
     content = await file.read()
     try:
         xls = pd.ExcelFile(io.BytesIO(content))
@@ -360,20 +283,6 @@ async def import_carburant(
     df = xls.parse(sheet_name, header=header_row)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # L'année est celle choisie à l'import (fichier annuel). Le mois est détecté
-    # depuis la colonne « Période » (AAAA-MM, ligne par ligne) ou le nom du fichier.
-    periode_col = _get_col(df, "Période", "Periode", "PERIODE")
-    if periode_col:
-        for val in df[periode_col].dropna().astype(str):
-            m = re.match(r"(\d{4})-(\d{2})", val.strip())
-            if m:
-                mois = int(m.group(2))
-                break
-    else:
-        detected_mois = _detect_mois(file.filename or "", xls, sheet_name)
-        if detected_mois:
-            mois = detected_mois
-
     # Mapping des colonnes réelles → champs DB
     litres_col   = _get_col(df, "Litres consommés", "Litres", "QuantiteTotale")
     ttc_col      = _get_col(df, "Montant TTC", "MontantTotal", "Montant TTC")
@@ -392,17 +301,45 @@ async def import_carburant(
     vtype_col    = _get_col(df, "Vehicle Type", "Type véhicule")
     distreco_col = _get_col(df, "Distance recommandée CO2", "Distance recommandée")
 
-    # Fichier annuel : la colonne « Période » (AAAA-MM) donne le mois de chaque ligne.
-    # Les mois présents dans le fichier sont remplacés ; les autres mois sont conservés.
-    def mois_ligne(row) -> int:
-        if periode_col:
-            m = re.match(r"(\d{4})-(\d{1,2})", str(row.get(periode_col) or "").strip())
-            if m and 1 <= int(m.group(2)) <= 12:
-                return int(m.group(2))
-        return mois
+    # Fichier annuel : une ligne par véhicule et par mois. Le mois de chaque ligne vient
+    # de « Période » (AAAA-MM) ou « Mois », sinon du dernier plein. Toute l'année choisie
+    # est remplacée par le contenu du fichier.
+    periode_col = _get_col(df, "Période", "Periode", "PERIODE", "Mois", "MOIS")
 
-    mois_fichier = {mois_ligne(row) for _, row in df.iterrows() if _cs(row.get("Matricule"))} or {mois}
-    db.query(Carburant).filter(Carburant.annee == annee, Carburant.mois.in_(mois_fichier)).delete(synchronize_session=False)
+    def periode_ligne(row) -> tuple[int | None, int | None]:
+        """(mois, année lue dans la ligne si elle en contient une)."""
+        v = row.get(periode_col) if periode_col else None
+        m = re.match(r"^\s*(\d{4})[-/](\d{1,2})", str(v)) if v is not None else None
+        if m and 1 <= int(m.group(2)) <= 12:
+            return int(m.group(2)), int(m.group(1))
+        mois_l = _mois_depuis(v) if periode_col else None
+        plein = _cd(row.get(plein_col)) if plein_col else None
+        if mois_l:
+            return mois_l, getattr(v, "year", None)
+        if plein:   # l'année du dernier plein peut précéder l'année du fichier
+            return plein.month, None
+        return None, None
+
+    lignes = []
+    errors: list[dict] = []
+    hors_annee = 0
+    for idx, row in df.iterrows():
+        matr = _cs(row.get("Matricule"))
+        if not matr or any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
+            continue
+        mois_l, annee_l = periode_ligne(row)
+        if not mois_l:
+            errors.append({"ligne": int(idx) + 2, "message": f"{matr} : mois introuvable (colonne Période, Mois ou DernierPlein)"})
+            continue
+        if annee_l and annee_l != annee:
+            hors_annee += 1
+            continue
+        lignes.append((idx, row, matr, mois_l))
+
+    if not lignes:
+        raise HTTPException(400, f"Aucune ligne exploitable pour {annee} : rien n'a été modifié")
+
+    remplacer_annee(db, Carburant, annee)
     annee_courante.set(annee)
 
     # Clé unique = (matricule, mois, annee)
@@ -410,17 +347,9 @@ async def import_carburant(
 
     created = 0
     updated = 0
-    errors: list[dict] = []
 
-    for idx, row in df.iterrows():
-        matr = _cs(row.get("Matricule"))
-        if not matr:
-            continue
-        if any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
-            continue
-
+    for idx, row, matr, mois_l in lignes:
         try:
-            mois_l = mois_ligne(row)
             values = dict(
                 matricule       = matr,
                 mois            = mois_l,
@@ -459,4 +388,9 @@ async def import_carburant(
             errors.append({"ligne": int(idx) + 2, "message": str(e)})
 
     db.commit()
-    return ImportCarburantResult(created=created, updated=updated, errors=errors, mois_detecte=mois, annee_detecte=annee)
+    mois_importes = sorted({m for *_, m in lignes})
+    return ImportCarburantResult(
+        created=created, updated=updated, errors=errors,
+        mois_detecte=mois_importes[-1], annee_detecte=annee,
+        mois_importes=mois_importes, hors_annee=hors_annee,
+    )
