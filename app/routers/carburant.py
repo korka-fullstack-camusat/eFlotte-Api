@@ -151,6 +151,7 @@ def stats_carburant(
         # Un véhicule peut avoir une ligne GAZOIL et une ligne ESSENCE : on compte les matricules
         total_vehicules=len({r.matricule for r in rows}),
         total_litres=round(total_litres, 2),
+        litres_estimes=round(sum(r.quantite_totale or 0 for r in rows if r.litres_estimes), 2),
         total_montant=round(total_montant, 2),
         total_montant_ht=round(sum(r.mt_ht or 0 for r in rows), 2),
         total_distance=round(total_distance, 2),
@@ -199,8 +200,11 @@ def update_carburant(
     item = db.get(Carburant, item_id)
     if not item:
         raise HTTPException(404, "Enregistrement introuvable")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    champs = payload.model_dump(exclude_unset=True)
+    for field, value in champs.items():
         setattr(item, field, value)
+    if "quantite_totale" in champs or "type_carburant" in champs:
+        item.litres_estimes = False   # valeur saisie : n'est plus une estimation
     db.commit()
     db.refresh(item)
     return item

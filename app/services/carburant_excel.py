@@ -214,8 +214,8 @@ def lire_carburant(brut: pd.DataFrame, annee: int) -> tuple[list[dict], list[dic
 def lire_recap_couts(brut: pd.DataFrame, annee: int, mois_exclus: set[int]) -> list[dict]:
     """Feuille « SUIVI GLOBALE DES COUTS » : une ligne par véhicule, colonnes
     « AAAA-MM_CARBURANT » (coût carburant HT) et « AAAA-MM_DISTANCE ». Sert pour les
-    mois sans bloc détaillé dans la feuille CARBURANT. Litres, TTC et type de
-    carburant n'y figurent pas : ils restent vides (jamais estimés)."""
+    mois sans bloc détaillé dans la feuille CARBURANT. Litres et type de carburant n'y
+    figurent pas : ils sont estimés ensuite (estimer_litres), TTC laissé vide."""
     entete = next(
         (i for i in range(min(len(brut), 15))
          if any("IMMATRICULATION" in str(v).upper() for v in brut.iloc[i].tolist())),
@@ -254,6 +254,50 @@ def feuille_recap_couts(xls: pd.ExcelFile) -> str | None:
     return next((s for s in xls.sheet_names if "SUIVI GLOBAL" in s.upper() and "COUT" in s.upper()), None)
 
 
+PRIX_LITRE_DEFAUT = {"GAZOIL": 680.0, "ESSENCE": 920.0}   # FCFA TTC, prix du fichier 2026
+TVA_DEFAUT = 1.18
+
+
+def _mediane(valeurs: list[float]) -> float | None:
+    v = sorted(x for x in valeurs if x and x > 0)
+    return v[len(v) // 2] if v else None
+
+
+def estimer_litres(db: Session, lignes_detail: list[dict], lignes_recap: list[dict]) -> None:
+    """Complète les lignes du récap des coûts (coût HT seul) par une estimation :
+    litres ≈ coût HT × TVA ÷ prix au litre TTC. Prix au litre et TVA lus dans le détail
+    du fichier (sinon 680 / 920 FCFA et 18 %). Type de carburant : celui du véhicule dans
+    le détail (le plus de litres), sinon sa fiche véhicule, sinon GAZOIL. Les lignes sont
+    marquées litres_estimes=True."""
+    from ..models.vehicule import Vehicule
+
+    prix = {
+        t: _mediane([l.get("prix_unitaire") for l in lignes_detail if l.get("type_carburant") == t]) or p
+        for t, p in PRIX_LITRE_DEFAUT.items()
+    }
+    tva = _mediane([l["montant_total"] / l["mt_ht"] for l in lignes_detail
+                    if l.get("montant_total") and l.get("mt_ht")]) or TVA_DEFAUT
+
+    cle = lambda m: "".join(str(m).split()).upper()
+    litres_par_type: dict[str, Counter] = {}
+    for l in lignes_detail:
+        if l.get("type_carburant") in prix and l.get("quantite_totale"):
+            litres_par_type.setdefault(cle(l["matricule"]), Counter())[l["type_carburant"]] += l["quantite_totale"]
+    fiches = {
+        cle(v.plaque_immatriculation): _type_carburant(v.type_carburant)
+        for v in db.query(Vehicule).filter(Vehicule.type_carburant.isnot(None)).all()
+    }
+
+    for l in lignes_recap:
+        k = cle(l["matricule"])
+        type_c = (litres_par_type[k].most_common(1)[0][0] if k in litres_par_type else None) \
+            or (fiches.get(k) if fiches.get(k) in prix else None) or "GAZOIL"
+        if l.get("mt_ht"):
+            l["type_carburant"] = type_c
+            l["quantite_totale"] = round(l["mt_ht"] * tva / prix[type_c], 2)
+            l["litres_estimes"] = True
+
+
 def importer_carburant(db: Session, xls: pd.ExcelFile, annee: int, feuille: str | None = None) -> dict:
     """Remplace les données carburant de `annee` par la feuille CARBURANT du fichier
     (complétée par « SUIVI GLOBALE DES COUTS » pour les mois sans détail).
@@ -267,6 +311,7 @@ def importer_carburant(db: Session, xls: pd.ExcelFile, annee: int, feuille: str 
     # Mois sans bloc détaillé : coût HT et distance du suivi global des coûts
     recap = feuille_recap_couts(xls)
     lignes_recap = lire_recap_couts(xls.parse(recap, header=None), annee, mois_detail) if recap else []
+    estimer_litres(db, lignes, lignes_recap)
     lignes += lignes_recap
     res = {"feuille": feuille, "created": 0, "updated": 0, "errors": erreurs,
            "hors_annee": hors_annee, "mois": sorted({l["mois"] for l in lignes}),

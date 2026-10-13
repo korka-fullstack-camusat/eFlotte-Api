@@ -26,6 +26,7 @@ class CarburantBase(BaseModel):
 
 class CarburantOut(CarburantBase):
     id: int
+    litres_estimes: bool = False   # litres et type estimés depuis le coût HT
 
     model_config = {"from_attributes": True}
 
@@ -38,6 +39,7 @@ class CarburantPage(BaseModel):
 class CarburantStats(BaseModel):
     total_vehicules:   int
     total_litres:      float
+    litres_estimes:    float = 0  # part de total_litres estimée depuis le coût HT
     total_montant:     float
     total_montant_ht:  float = 0  # seul coût disponible pour tous les mois (récap des coûts compris)
     total_distance:    float

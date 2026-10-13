@@ -1,5 +1,5 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Float, Date, Text, Index
+from sqlalchemy import Column, Integer, String, Float, Date, Text, Index, Boolean, text
 from ..database import Base
 from ..annee import Annuel
 
@@ -30,6 +30,8 @@ class Carburant(Annuel, Base):
     conso_100       = Column(Float)          # Conso/100 recommandée
     vehicle_type    = Column(String(100))    # Vehicle Type (Light, Truck…)
     dist_recommandee = Column(Float)         # Distance recommandée CO2
+    # Litres (et type de carburant) estimés depuis le coût HT : mois sans détail dans le fichier
+    litres_estimes  = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
     __table_args__ = (
         Index("ix_carburant_annee_mois", "annee", "mois"),

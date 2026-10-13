@@ -49,6 +49,10 @@ with engine.begin() as conn:
         ALTER TABLE carburant
             ADD COLUMN IF NOT EXISTS mois INTEGER NOT NULL DEFAULT 1
     """))
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE carburant
+            ADD COLUMN IF NOT EXISTS litres_estimes BOOLEAN NOT NULL DEFAULT FALSE
+    """))
     import datetime as _dt
     current_year = _dt.date.today().year
     conn.execute(sqlalchemy.text(f"""
