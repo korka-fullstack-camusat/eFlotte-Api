@@ -24,7 +24,7 @@ from ..database import get_db
 from ..models.user import User
 from ..models.vehicule import Vehicule
 from ..services.auth_service import hash_password, require_admin
-from ..services.sms import ErreurSMS, envoyer_sms, message_identifiants, normaliser_telephone, sms_actif
+from ..services.sms import ErreurSMS, client_sms, envoyer_sms, message_identifiants, normaliser_telephone, sms_actif
 
 router = APIRouter(prefix="/api/auth/chauffeurs", tags=["Comptes chauffeurs"])
 
@@ -231,7 +231,7 @@ async def importer(
     db.commit()
 
     if envoyer and a_creer:
-        with httpx.Client(timeout=20) as client:
+        with client_sms() as client:
             for res, user in a_creer:
                 res.sms, erreur = _envoyer(user, client)
                 if erreur and res.sms == "ECHEC":
@@ -260,7 +260,7 @@ def renvoyer_identifiants(user_id: int, db: Session = Depends(get_db), _: User =
         raise HTTPException(404, "Chauffeur introuvable")
     user.hashed_password = hash_password(settings.chauffeur_mot_de_passe_initial)
     user.doit_changer_mdp = True
-    with httpx.Client(timeout=20) as client:
+    with client_sms() as client:
         statut, erreur = _envoyer(user, client)
     db.commit()
     return ResultatIdentifiants(
@@ -272,4 +272,25 @@ def renvoyer_identifiants(user_id: int, db: Session = Depends(get_db), _: User =
 
 @router.get("/sms")
 def statut_sms(_: User = Depends(require_admin)):
-    return {"actif": sms_actif(), "app_url": settings.app_url, "mot_de_passe_initial": settings.chauffeur_mot_de_passe_initial}
+    return {
+        "actif": sms_actif(), "app_url": settings.app_url,
+        "mot_de_passe_initial": settings.chauffeur_mot_de_passe_initial,
+        "signature": settings.orange_sms_signature,
+    }
+
+
+class TestSMS(BaseModel):
+    telephone: str
+
+
+@router.post("/sms/test")
+def tester_sms(data: TestSMS, _: User = Depends(require_admin)):
+    """Envoie un SMS de test pour vérifier la configuration Orange SMS Pro."""
+    tel = normaliser_telephone(data.telephone)
+    if not tel:
+        raise HTTPException(400, "Numéro de téléphone invalide")
+    try:
+        reponse = envoyer_sms(tel, "eFlotte CAMUSAT: SMS de test. La configuration des SMS fonctionne.")
+    except ErreurSMS as e:
+        raise HTTPException(502, str(e))
+    return {"telephone": tel, "reponse": reponse}

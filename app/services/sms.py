@@ -1,21 +1,28 @@
 """
-Envoi de SMS par l'Orange SMS API (https://developer.orange.com/apis/sms).
+Envoi de SMS par Orange SMS Pro Sénégal (https://api.orangesmspro.sn:8443).
 
-Configuration (.env) : ORANGE_CLIENT_ID, ORANGE_CLIENT_SECRET, ORANGE_SENDER_ADDRESS
-(numéro d'envoi attribué par Orange, ex. tel:+2210000) et éventuellement ORANGE_SENDER_NAME.
-Sans ORANGE_CLIENT_ID, les SMS sont désactivés : `sms_actif()` renvoie False.
+Configuration (.env, jamais dans le code) :
+  ORANGE_SMS_LOGIN, ORANGE_SMS_TOKEN, ORANGE_SMS_ACCESS_KEY,
+  ORANGE_SMS_SIGNATURE (nom d'expéditeur, ex. « CAMUSAT NOC »),
+  ORANGE_SMS_BASE_URL (ex. https://api.orangesmspro.sn:8443/api/json),
+  ORANGE_SMS_VERIFY_SSL (True par défaut).
+Sans ORANGE_SMS_LOGIN / TOKEN / ACCESS_KEY, les SMS sont désactivés.
+
+Requête : POST (formulaire) avec authentification Basic login:token et les champs
+token, subject, signature, recipient (221XXXXXXXXX), content, timestamp et key =
+HMAC-SHA1(access_key, token + subject + signature + recipient + content + timestamp).
 """
+import hashlib
+import hmac
+import logging
 import re
 import time
-from urllib.parse import quote
 
 import httpx
 
 from ..config import settings
 
-_TOKEN_URL = "https://api.orange.com/oauth/v3/token"
-_SMS_URL = "https://api.orange.com/smsmessaging/v1/outbound/{sender}/requests"
-_jeton: dict = {"valeur": None, "expire": 0.0}
+log = logging.getLogger("eflotte.sms")
 
 
 class ErreurSMS(Exception):
@@ -23,7 +30,7 @@ class ErreurSMS(Exception):
 
 
 def sms_actif() -> bool:
-    return bool(settings.orange_client_id and settings.orange_client_secret)
+    return bool(settings.orange_sms_login and settings.orange_sms_token and settings.orange_sms_access_key)
 
 
 def normaliser_telephone(brut) -> str | None:
@@ -50,58 +57,64 @@ def normaliser_telephone(brut) -> str | None:
     return None
 
 
-def _obtenir_jeton(client: httpx.Client) -> str:
-    if _jeton["valeur"] and _jeton["expire"] > time.time() + 60:
-        return _jeton["valeur"]
-    r = client.post(
-        _TOKEN_URL,
-        auth=(settings.orange_client_id, settings.orange_client_secret),
-        data={"grant_type": "client_credentials"},
-        headers={"Accept": "application/json"},
-    )
-    if r.status_code != 200:
-        raise ErreurSMS(f"Authentification Orange refusée ({r.status_code})")
-    data = r.json()
-    _jeton["valeur"] = data["access_token"]
-    _jeton["expire"] = time.time() + int(data.get("expires_in", 3000))
-    return _jeton["valeur"]
-
-
-def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None) -> None:
-    """Envoie un SMS ; lève ErreurSMS avec un message lisible en cas d'échec."""
-    if not sms_actif():
-        raise ErreurSMS("SMS non configurés (ORANGE_CLIENT_ID absent)")
-    propre = client is None
-    client = client or httpx.Client(timeout=20)
+def _reponse_en_erreur(r: httpx.Response) -> str | None:
+    """Message d'erreur si la réponse d'Orange signale un échec, sinon None."""
+    if r.status_code >= 400:
+        return f"HTTP {r.status_code} : {r.text[:200]}"
     try:
-        jeton = _obtenir_jeton(client)
-        expediteur = settings.orange_sender_address
-        corps = {
-            "outboundSMSMessageRequest": {
-                "address": f"tel:{telephone}",
-                "senderAddress": expediteur,
-                "outboundSMSTextMessage": {"message": message},
-            }
-        }
-        if settings.orange_sender_name:
-            corps["outboundSMSMessageRequest"]["senderName"] = settings.orange_sender_name
+        data = r.json()
+    except ValueError:
+        return None if r.text.strip() else "Réponse vide"
+    if isinstance(data, dict):
+        statut = str(data.get("status", data.get("STATUS", ""))).upper()
+        if data.get("error") or data.get("ERROR") or statut in ("ERROR", "FAILED", "KO"):
+            return f"Refusé par Orange : {str(data)[:200]}"
+    return None
+
+
+def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None,
+                sujet: str = "eFlotte") -> str:
+    """Envoie un SMS. Renvoie la réponse brute d'Orange (tronquée) ; lève ErreurSMS
+    avec un message lisible en cas d'échec."""
+    if not sms_actif():
+        raise ErreurSMS("SMS non configurés (ORANGE_SMS_LOGIN / TOKEN / ACCESS_KEY absents)")
+    destinataire = telephone.lstrip("+")
+    token, signature = settings.orange_sms_token, settings.orange_sms_signature
+    horodatage = str(int(time.time()))
+    cle = hmac.new(
+        settings.orange_sms_access_key.encode(),
+        (token + sujet + signature + destinataire + message + horodatage).encode(),
+        hashlib.sha1,
+    ).hexdigest()
+    champs = {
+        "token": token, "subject": sujet, "signature": signature,
+        "recipient": destinataire, "content": message,
+        "timestamp": horodatage, "key": cle,
+    }
+    propre = client is None
+    client = client or httpx.Client(timeout=30, verify=settings.orange_sms_verify_ssl)
+    try:
         r = client.post(
-            _SMS_URL.format(sender=quote(expediteur, safe="")),
-            json=corps,
-            headers={"Authorization": f"Bearer {jeton}"},
+            settings.orange_sms_base_url,
+            data=champs,
+            auth=(settings.orange_sms_login, token),
+            headers={"Accept": "application/json"},
         )
-        if r.status_code not in (200, 201):
-            try:
-                detail = r.json().get("requestError", {})
-                detail = next(iter(detail.values()), {}).get("text") or r.text
-            except Exception:
-                detail = r.text
-            raise ErreurSMS(f"Refusé par Orange ({r.status_code}) : {str(detail)[:150]}")
     except httpx.HTTPError as e:
-        raise ErreurSMS(f"Orange injoignable : {e.__class__.__name__}")
+        raise ErreurSMS(f"Orange SMS Pro injoignable : {e.__class__.__name__}")
     finally:
         if propre:
             client.close()
+    erreur = _reponse_en_erreur(r)
+    log.info("SMS vers %s : HTTP %s %s", destinataire[:5] + "…", r.status_code, r.text[:200])
+    if erreur:
+        raise ErreurSMS(erreur)
+    return r.text[:300]
+
+
+def client_sms() -> httpx.Client:
+    """Client HTTP réutilisable pour un envoi en série."""
+    return httpx.Client(timeout=30, verify=settings.orange_sms_verify_ssl)
 
 
 def message_identifiants(username: str, mot_de_passe: str) -> str:
