@@ -149,6 +149,7 @@ def stats_carburant(
         total_vehicules=len({r.matricule for r in rows}),
         total_litres=round(total_litres, 2),
         total_montant=round(total_montant, 2),
+        total_montant_ht=round(sum(r.mt_ht or 0 for r in rows), 2),
         total_distance=round(total_distance, 2),
         nb_gazoil=len({r.matricule for r in gazoil}),
         nb_essence=len({r.matricule for r in essence}),

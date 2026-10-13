@@ -39,6 +39,7 @@ class CarburantStats(BaseModel):
     total_vehicules:   int
     total_litres:      float
     total_montant:     float
+    total_montant_ht:  float = 0  # seul coût disponible pour tous les mois (récap des coûts compris)
     total_distance:    float
     nb_gazoil:         int
     nb_essence:        int

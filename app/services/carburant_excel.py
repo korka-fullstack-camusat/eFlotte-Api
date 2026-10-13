@@ -211,15 +211,66 @@ def lire_carburant(brut: pd.DataFrame, annee: int) -> tuple[list[dict], list[dic
     return lignes, erreurs, hors_annee
 
 
+def lire_recap_couts(brut: pd.DataFrame, annee: int, mois_exclus: set[int]) -> list[dict]:
+    """Feuille « SUIVI GLOBALE DES COUTS » : une ligne par véhicule, colonnes
+    « AAAA-MM_CARBURANT » (coût carburant HT) et « AAAA-MM_DISTANCE ». Sert pour les
+    mois sans bloc détaillé dans la feuille CARBURANT. Litres, TTC et type de
+    carburant n'y figurent pas : ils restent vides (jamais estimés)."""
+    entete = next(
+        (i for i in range(min(len(brut), 15))
+         if any("IMMATRICULATION" in str(v).upper() for v in brut.iloc[i].tolist())),
+        None,
+    )
+    if entete is None:
+        return []
+    noms = [str(v).strip().upper() if not _vide(v) else "" for v in brut.iloc[entete].tolist()]
+    j_plaque = next(j for j, n in enumerate(noms) if "IMMATRICULATION" in n)
+    j_type = next((j for j, n in enumerate(noms) if n == "TYPE VEHICULE"), None)
+    colonnes: dict[int, dict[str, int]] = {}
+    for j, n in enumerate(noms):
+        m = re.match(r"^(\d{4})-(\d{2})_(CARBURANT|DISTANCE)$", n)
+        if m and int(m.group(1)) == annee and 1 <= int(m.group(2)) <= 12 and int(m.group(2)) not in mois_exclus:
+            colonnes.setdefault(int(m.group(2)), {})[m.group(3)] = j
+
+    lignes = []
+    for i in range(entete + 1, len(brut)):
+        matr = _texte(brut.iat[i, j_plaque])
+        if not matr or "TOTAL" in matr.upper():
+            continue
+        for mois, cols in colonnes.items():
+            cout = _nombre(brut.iat[i, cols["CARBURANT"]]) if "CARBURANT" in cols else None
+            if cout is None:
+                continue
+            lignes.append({
+                "matricule": matr, "mois": mois, "annee": annee,
+                "mt_ht": cout,
+                "distance_totale": _nombre(brut.iat[i, cols["DISTANCE"]]) if "DISTANCE" in cols else None,
+                "vehicle_type": _texte(brut.iat[i, j_type]) if j_type is not None else None,
+            })
+    return lignes
+
+
+def feuille_recap_couts(xls: pd.ExcelFile) -> str | None:
+    return next((s for s in xls.sheet_names if "SUIVI GLOBAL" in s.upper() and "COUT" in s.upper()), None)
+
+
 def importer_carburant(db: Session, xls: pd.ExcelFile, annee: int, feuille: str | None = None) -> dict:
-    """Remplace les données carburant de `annee` par la feuille CARBURANT du fichier.
+    """Remplace les données carburant de `annee` par la feuille CARBURANT du fichier
+    (complétée par « SUIVI GLOBALE DES COUTS » pour les mois sans détail).
     Rien n'est supprimé si aucune ligne n'est exploitable. Ne fait pas le commit."""
     feuille = feuille or feuille_carburant(xls)
     if not feuille:
-        return {"feuille": None, "created": 0, "updated": 0, "errors": [], "hors_annee": 0, "mois": []}
+        return {"feuille": None, "created": 0, "updated": 0, "errors": [], "hors_annee": 0, "mois": [],
+                "mois_detail": [], "mois_recap": []}
     lignes, erreurs, hors_annee = lire_carburant(xls.parse(feuille, header=None), annee)
+    mois_detail = {l["mois"] for l in lignes}
+    # Mois sans bloc détaillé : coût HT et distance du suivi global des coûts
+    recap = feuille_recap_couts(xls)
+    lignes_recap = lire_recap_couts(xls.parse(recap, header=None), annee, mois_detail) if recap else []
+    lignes += lignes_recap
     res = {"feuille": feuille, "created": 0, "updated": 0, "errors": erreurs,
-           "hors_annee": hors_annee, "mois": sorted({l["mois"] for l in lignes})}
+           "hors_annee": hors_annee, "mois": sorted({l["mois"] for l in lignes}),
+           "mois_detail": sorted(mois_detail), "mois_recap": sorted({l["mois"] for l in lignes_recap})}
     if not lignes:
         return res
 
