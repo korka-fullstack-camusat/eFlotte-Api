@@ -48,6 +48,12 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       SECRET_KEY: ${SECRET_KEY:?Définir SECRET_KEY dans .env}
+      CHAUFFEUR_MOT_DE_PASSE_INITIAL: ${CHAUFFEUR_MOT_DE_PASSE_INITIAL:-Camusat@2026}
+      APP_URL: ${APP_URL:-}
+      ORANGE_CLIENT_ID: ${ORANGE_CLIENT_ID:-}
+      ORANGE_CLIENT_SECRET: ${ORANGE_CLIENT_SECRET:-}
+      ORANGE_SENDER_ADDRESS: ${ORANGE_SENDER_ADDRESS:-tel:+2210000}
+      ORANGE_SENDER_NAME: ${ORANGE_SENDER_NAME:-}
     depends_on:
       db:
         condition: service_healthy

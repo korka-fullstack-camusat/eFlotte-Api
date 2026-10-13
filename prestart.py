@@ -97,7 +97,10 @@ with engine.begin() as conn:
     conn.execute(sqlalchemy.text("""
         ALTER TABLE users
             ADD COLUMN IF NOT EXISTS vehicule_plaque VARCHAR(30),
-            ADD COLUMN IF NOT EXISTS filiale VARCHAR(150)
+            ADD COLUMN IF NOT EXISTS filiale VARCHAR(150),
+            ADD COLUMN IF NOT EXISTS telephone VARCHAR(30),
+            ADD COLUMN IF NOT EXISTS doit_changer_mdp BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS identifiants_envoyes_at TIMESTAMPTZ
     """))
 print("✓ Colonnes à jour.")
 

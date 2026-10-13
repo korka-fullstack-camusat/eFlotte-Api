@@ -70,6 +70,11 @@ def require_chauffeur(user: User = Depends(get_authenticated_user)) -> User:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Action réservée aux comptes chauffeur.",
         )
+    if user.doit_changer_mdp:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Changez votre mot de passe avant d'utiliser l'application.",
+        )
     return user
 
 

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
@@ -9,6 +11,7 @@ from ..services.auth_service import (
     verify_password, hash_password, create_access_token,
     get_authenticated_user, get_current_user, require_admin,
 )
+from ..services.sms import normaliser_telephone
 
 router = APIRouter(prefix="/api/auth", tags=["Authentification"])
 
@@ -23,6 +26,7 @@ class TokenResponse(BaseModel):
     username:     str
     full_name:    str | None
     role:         str = "EDITOR"
+    doit_changer_mdp: bool = False
 
 
 class UserOut(BaseModel):
@@ -34,6 +38,9 @@ class UserOut(BaseModel):
     role:      str = "EDITOR"
     vehicule_plaque: str | None = None
     filiale:   str | None = None
+    telephone: str | None = None
+    doit_changer_mdp: bool = False
+    identifiants_envoyes_at: datetime | None = None
     model_config = {"from_attributes": True}
 
 
@@ -45,6 +52,7 @@ class UserCreate(BaseModel):
     role:      str = "EDITOR"
     vehicule_plaque: str | None = None
     filiale:   str | None = None
+    telephone: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -55,6 +63,7 @@ class UserUpdate(BaseModel):
     password:  str | None = None
     vehicule_plaque: str | None = None
     filiale:   str | None = None
+    telephone: str | None = None
 
 
 class ChangementMotDePasse(BaseModel):
@@ -67,6 +76,15 @@ def _vide_en_none(val: str | None) -> str | None:
     email entrent en conflit sur la contrainte d'unicité."""
     val = (val or "").strip()
     return val or None
+
+
+def _telephone(val: str | None) -> str | None:
+    if not _vide_en_none(val):
+        return None
+    tel = normaliser_telephone(val)
+    if not tel:
+        raise HTTPException(400, "Numéro de téléphone invalide (ex : 77 123 45 67 ou +221771234567)")
+    return tel
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────
@@ -89,7 +107,8 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
         raise HTTPException(status_code=403, detail="Compte désactivé")
 
     token = create_access_token({"sub": user.username})
-    return TokenResponse(access_token=token, username=user.username, full_name=user.full_name, role=user.role)
+    return TokenResponse(access_token=token, username=user.username, full_name=user.full_name, role=user.role,
+                         doit_changer_mdp=bool(user.doit_changer_mdp))
 
 
 @router.get("/me", response_model=UserOut)
@@ -108,7 +127,10 @@ def changer_mot_de_passe(
         raise HTTPException(400, "Mot de passe actuel incorrect")
     if len(data.nouveau) < 6:
         raise HTTPException(400, "Le nouveau mot de passe doit contenir au moins 6 caractères")
+    if data.nouveau == data.ancien:
+        raise HTTPException(400, "Le nouveau mot de passe doit être différent de l'actuel")
     current_user.hashed_password = hash_password(data.nouveau)
+    current_user.doit_changer_mdp = False
     db.commit()
 
 
@@ -138,6 +160,7 @@ def create_user(
         role=data.role,
         vehicule_plaque=_vide_en_none(data.vehicule_plaque),
         filiale=_vide_en_none(data.filiale),
+        telephone=_telephone(data.telephone),
     )
     db.add(user); db.commit(); db.refresh(user)
     return user
@@ -174,6 +197,8 @@ def update_user(
         user.vehicule_plaque = _vide_en_none(data.vehicule_plaque)
     if data.filiale is not None:
         user.filiale = _vide_en_none(data.filiale)
+    if data.telephone is not None:
+        user.telephone = _telephone(data.telephone)
     if user.role == "CHAUFFEUR" and not user.filiale:
         raise HTTPException(400, "La filiale est obligatoire pour un compte chauffeur")
     if data.is_active is not None:

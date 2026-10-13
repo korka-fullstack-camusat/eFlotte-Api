@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean
+from sqlalchemy import Column, Integer, String, Boolean, DateTime
 from ..database import Base
 
 
@@ -18,3 +18,8 @@ class User(Base):
     vehicule_plaque = Column(String(30), nullable=True)
     # Filiale du chauffeur : saisie une seule fois, reprise dans chaque rapport
     filiale         = Column(String(150), nullable=True)
+    # Téléphone (format +221…) : reçoit les identifiants par SMS
+    telephone       = Column(String(30), index=True, nullable=True)
+    # Mot de passe initial commun (import en masse) : à changer avant d'utiliser l'app
+    doit_changer_mdp = Column(Boolean, nullable=False, default=False, server_default="false")
+    identifiants_envoyes_at = Column(DateTime(timezone=True), nullable=True)

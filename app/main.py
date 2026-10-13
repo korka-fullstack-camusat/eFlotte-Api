@@ -6,7 +6,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from .routers import (
     auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur,
     suivi_devis, checklists_vl, suivi_pannes, pneumatiques,
-    import_global, suivi_sinistres, carburant, inspections,
+    import_global, suivi_sinistres, carburant, inspections, comptes_chauffeurs,
 )
 
 
@@ -51,6 +51,7 @@ app.include_router(import_global.router)
 app.include_router(suivi_sinistres.router)
 app.include_router(carburant.router)
 app.include_router(inspections.router)
+app.include_router(comptes_chauffeurs.router)
 
 
 @app.get("/")
