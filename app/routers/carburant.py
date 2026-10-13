@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from ..database import get_db
+from ..annee import annee_courante
 from ..models.carburant import Carburant
 from ..models.user import User
 from ..schemas.carburant import CarburantBase, CarburantOut, CarburantPage, CarburantStats, CarburantUpdate, ImportCarburantResult
@@ -395,11 +396,21 @@ async def import_carburant(
     vtype_col    = _get_col(df, "Vehicle Type", "Type véhicule")
     distreco_col = _get_col(df, "Distance recommandée CO2", "Distance recommandée")
 
+    # Fichier annuel : la colonne « Période » (AAAA-MM) donne le mois de chaque ligne.
+    # Les mois présents dans le fichier sont remplacés ; les autres mois sont conservés.
+    def mois_ligne(row) -> int:
+        if periode_col:
+            m = re.match(r"(\d{4})-(\d{1,2})", str(row.get(periode_col) or "").strip())
+            if m and 1 <= int(m.group(2)) <= 12:
+                return int(m.group(2))
+        return mois
+
+    mois_fichier = {mois_ligne(row) for _, row in df.iterrows() if _cs(row.get("Matricule"))} or {mois}
+    db.query(Carburant).filter(Carburant.annee == annee, Carburant.mois.in_(mois_fichier)).delete(synchronize_session=False)
+    annee_courante.set(annee)
+
     # Clé unique = (matricule, mois, annee)
-    existing_map: dict[tuple[str, int, int], Carburant] = {
-        (r.matricule, r.mois, r.annee): r
-        for r in db.query(Carburant).filter(Carburant.mois == mois, Carburant.annee == annee).all()
-    }
+    existing_map: dict[tuple[str, int, int], Carburant] = {}
 
     created = 0
     updated = 0
@@ -413,9 +424,10 @@ async def import_carburant(
             continue
 
         try:
+            mois_l = mois_ligne(row)
             values = dict(
                 matricule       = matr,
-                mois            = mois,
+                mois            = mois_l,
                 annee           = annee,
                 quantite_totale = _cf(row.get(litres_col)) if litres_col else None,
                 montant_total   = _cf(row.get(ttc_col))    if ttc_col   else None,
@@ -435,7 +447,7 @@ async def import_carburant(
                 dist_recommandee = _cf(row.get(distreco_col)) if distreco_col else None,
             )
 
-            key = (matr, mois, annee)
+            key = (matr, mois_l, annee)
             existing = existing_map.get(key)
             if existing:
                 for k, v in values.items():

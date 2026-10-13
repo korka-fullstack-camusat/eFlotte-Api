@@ -3,14 +3,16 @@ Import global — lit le fichier Excel une seule fois et alimente
 automatiquement toutes les rubriques de l'application.
 """
 import io
-from datetime import date as DateType
+import re
+from datetime import date as DateType, datetime
 
 import pandas as pd
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..annee import annee_courante, annee_par_defaut, lire_annee, remplacer_annee
 from ..models.user import User
 from ..models.import_global_log import ImportGlobalLog
 from ..models.vehicule import Vehicule
@@ -98,6 +100,31 @@ def _cf(v) -> float | None:
         return float(v)
     except Exception:
         return None
+
+
+_MOIS_NOMS = {"JAN": 1, "FEV": 2, "FÉV": 2, "FEB": 2, "MAR": 3, "AVR": 4, "APR": 4, "MAI": 5, "MAY": 5,
+              "JUIN": 6, "JUN": 6, "JUIL": 7, "JUL": 7, "AOU": 8, "AOÛ": 8, "AUG": 8, "SEP": 9,
+              "OCT": 10, "NOV": 11, "DEC": 12, "DÉC": 12}
+
+
+def _mois_depuis(v) -> int | None:
+    """Mois (1-12) depuis une date, « 2026-03 », « 03/2026 », « 3 » ou « Mars »."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    if isinstance(v, (pd.Timestamp, datetime, DateType)):
+        return v.month
+    t = str(v).strip().upper()
+    m = re.match(r"^(\d{4})[-/](\d{1,2})", t) or re.match(r"^(\d{1,2})[-/](\d{4})", t)
+    if m:
+        n = int(m.group(2) if len(m.group(1)) == 4 else m.group(1))
+        return n if 1 <= n <= 12 else None
+    if t.replace(".0", "").isdigit():
+        n = int(float(t))
+        return n if 1 <= n <= 12 else None
+    for nom in sorted(_MOIS_NOMS, key=len, reverse=True):
+        if t.startswith(nom):
+            return _MOIS_NOMS[nom]
+    return None
 
 
 def _find_col(columns: list[str], *keywords: str) -> str | None:
@@ -215,11 +242,13 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
         r.skip_reason = f"Colonnes manquantes parmi : plaque={col_plaque}, mois={col_mois}, type={col_type}, valeur={col_valeur}"
         return r
 
+    remplacer_annee(db, CoutFlotte, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {
         (c.plaque_immatriculation, c.mois, c.type_cout): c
         for c in db.query(CoutFlotte).all()
     }
 
+    hors_annee = 0
     for idx, row in df.iterrows():
         try:
             plaque = _cs(row[col_plaque])
@@ -228,6 +257,9 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
             if not plaque or pd.isna(mois_val) or pd.isna(type_cout_val):
                 continue
             mois: DateType = pd.to_datetime(mois_val).date().replace(day=1)
+            if mois.year != annee_par_defaut():
+                hors_annee += 1
+                continue
             type_cout = str(type_cout_val).strip().upper()
             valeur = float(row[col_valeur]) if not pd.isna(row[col_valeur]) else 0.0
             type_location = _cs(row[col_tl]) if col_tl else None
@@ -250,6 +282,8 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
+    if hors_annee:
+        r.errors.append({"ligne": 0, "message": f"{hors_annee} ligne(s) d'une autre année que {annee_par_defaut()} ignorée(s)"})
     db.commit()
     return r
 
@@ -272,6 +306,7 @@ def _missions(xls: pd.ExcelFile, db: Session) -> SectionResult:
         try: return pd.to_datetime(v).date()
         except: return None
 
+    remplacer_annee(db, MissionChauffeur, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {
         (m.date, m.immatriculation, m.demandeur, m.destination): m
         for m in db.query(MissionChauffeur).all()
@@ -367,6 +402,7 @@ def _devis(xls: pd.ExcelFile, db: Session) -> SectionResult:
     if not col_desc:
         r.skipped = True; r.skip_reason = "Colonne DESCRIPTIONS introuvable"; return r
 
+    remplacer_annee(db, SuiviDevis, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {
         (d.descriptions, d.numero_devis): d
         for d in db.query(SuiviDevis).all()
@@ -418,6 +454,7 @@ def _checklists(xls: pd.ExcelFile, db: Session) -> SectionResult:
              _find_col(cols, "LABEL"), _find_col(cols, "CAR GROUP"), None}
     semaine_cols = [c for c in cols if c not in fixed and str(c).strip()]
 
+    remplacer_annee(db, CheckListVL, annee_par_defaut())  # fichier annuel : remplace l'année importée
     seen: dict[str, CheckListVL] = {c.plaque_immatriculation: c for c in db.query(CheckListVL).all()}
     touched: set[str] = set()
     for idx, row in df.iterrows():
@@ -500,6 +537,7 @@ def _entretiens(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
     col_reste = _find_col(cols, "REST")
 
+    remplacer_annee(db, EntretienVehicule, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {e.plaque_immatriculation: e for e in db.query(EntretienVehicule).all()}
 
     for idx, row in df.iterrows():
@@ -578,6 +616,7 @@ def _entretiens_bis(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
     col_reste = _find_col(cols, "REST")
 
+    remplacer_annee(db, EntretienBis, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {e.plaque_immatriculation: e for e in db.query(EntretienBis).all()}
 
     for idx, row in df.iterrows():
@@ -637,6 +676,7 @@ def _pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
     if not col_imma:
         r.skipped = True; r.skip_reason = "Colonne IMMA introuvable"; return r
 
+    remplacer_annee(db, SuiviPanne, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {
         (p.immatriculation, p.date, p.nature_panne): p
         for p in db.query(SuiviPanne).all()
@@ -715,6 +755,7 @@ def _sinistres(xls: pd.ExcelFile, db: Session) -> SectionResult:
     if not col_mat:
         r.skipped = True; r.skip_reason = "Colonne MATRICULE introuvable"; return r
 
+    remplacer_annee(db, SuiviSinistre, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {
         (s.matricule, s.date_declaration, s.circonstances): s
         for s in db.query(SuiviSinistre).all()
@@ -771,6 +812,7 @@ def _pneumatiques(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
     current_fournisseur = None
     col_map: dict[str, int] = {}
+    remplacer_annee(db, Pneumatique, annee_par_defaut())  # fichier annuel : remplace l'année importée
     existing_map = {
         (p.immatriculation, p.fournisseur): p
         for p in db.query(Pneumatique).all()
@@ -900,7 +942,25 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
         None,
     )
 
-    existing_map: dict[str, Carburant] = {c.matricule: c for c in db.query(Carburant).all()}
+    # Fichier annuel : une ligne par véhicule et par mois. Mois lu dans « Période » /
+    # « Mois », sinon déduit du dernier plein. Seuls les mois présents sont remplacés
+    # (les imports mensuels de la page Carburant des autres mois sont conservés).
+    col_periode = _find_col(list(df.columns), "PERIODE", "PÉRIODE", "MOIS")
+    annee = annee_par_defaut()
+
+    def mois_ligne(row) -> int:
+        m = _mois_depuis(row.get(col_periode)) if col_periode else None
+        if not m:
+            plein = _cd(row.get("DernierPlein"))
+            m = plein.month if plein else None
+        return m or 1
+
+    mois_fichier = {mois_ligne(row) for _, row in df.iterrows() if _cs(row.get("Matricule"))}
+    if mois_fichier:
+        db.query(Carburant).filter(Carburant.annee == annee, Carburant.mois.in_(mois_fichier)).delete(synchronize_session=False)
+    existing_map: dict[tuple[str, int], Carburant] = {
+        (c.matricule, c.mois): c for c in db.query(Carburant).filter(Carburant.annee == annee).all()
+    }
 
     for idx, row in df.iterrows():
         try:
@@ -909,6 +969,7 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 continue
             if any(kw in matr.upper() for kw in ("TOTAL", "SOUS-TOTAL", "GRAND TOTAL")):
                 continue
+            mois = mois_ligne(row)
 
             type_carb = None
             if type_col:
@@ -918,6 +979,8 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
 
             vals = dict(
                 matricule       = matr,
+                mois            = mois,
+                annee           = annee,
                 quantite_totale = _cf(row.get("QuantiteTotale")),
                 montant_total   = _cf(row.get("MontantTotal")),
                 mt_ht           = _cf(row.get("Mt HT")),
@@ -932,7 +995,7 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
                 code_projet     = _cs(row.get("CodeProjet")),
                 num_carte       = _cs(row.get("NumCarte")),
             )
-            existing = existing_map.get(matr)
+            existing = existing_map.get((matr, mois))
             if existing:
                 for k, v in vals.items():
                     setattr(existing, k, v)
@@ -940,7 +1003,7 @@ def _carburant(xls: pd.ExcelFile, db: Session) -> SectionResult:
             else:
                 new_c = Carburant(**vals)
                 db.add(new_c)
-                existing_map[matr] = new_c
+                existing_map[(matr, mois)] = new_c
                 r.created += 1
         except Exception as e:
             r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
@@ -1091,10 +1154,16 @@ def _recap_pannes(xls: pd.ExcelFile, db: Session) -> SectionResult:
 async def import_global(
     file: UploadFile = File(...),
     sinistres_file: UploadFile | None = File(None),
+    annee: int | None = Form(None, description="Année du fichier (sinon année consultée / en cours)"),
     db: Session = Depends(get_db),
     current_user: User = Depends(require_editor),
 ):
     import gc
+
+    # Fichier annuel : toutes les sections importées sont rangées dans cette année,
+    # et les données de cette année sont remplacées section par section.
+    annee = lire_annee(annee) or annee_par_defaut()
+    annee_courante.set(annee)
 
     content = await file.read()
 

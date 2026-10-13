@@ -1,10 +1,11 @@
 import io
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import Form, APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..annee import annee_courante, annee_par_defaut, lire_annee, remplacer_annee
 from ..models.user import User
 from ..models.entretien_bis import EntretienBis
 from ..schemas.entretien_bis import EntretienBisOut, EntretienBisCreate, EntretienBisUpdate, ImportEntretienBisResult
@@ -116,9 +117,13 @@ def delete_entretien_bis(
 @router.post("/import", response_model=ImportEntretienBisResult)
 async def import_entretiens_bis(
     file: UploadFile = File(...),
+    annee: int | None = Form(None, description="Année du fichier importé"),
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
+    # Fichier annuel : rangé dans l'année choisie, qui est remplacée (voir app/annee.py)
+    annee = lire_annee(annee) or annee_par_defaut()
+    annee_courante.set(annee)
     content = await file.read()
     try:
         xls = pd.ExcelFile(io.BytesIO(content))
@@ -175,6 +180,7 @@ async def import_entretiens_bis(
         except (TypeError, ValueError):
             return None
 
+    remplacer_annee(db, EntretienBis, annee)
     existing_map = {e.plaque_immatriculation: e for e in db.query(EntretienBis).all()}
 
     for idx, row in df.iterrows():

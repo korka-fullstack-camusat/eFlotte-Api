@@ -1,9 +1,10 @@
 from sqlalchemy import Column, Integer, String, Numeric, Date, DateTime, UniqueConstraint
 from sqlalchemy.sql import func
 from ..database import Base
+from ..annee import Annuel, colonne_annee
 
 
-class CoutFlotte(Base):
+class CoutFlotte(Annuel, Base):
     """Coûts mensuels par véhicule — issu de la feuille 'DATA_FLOTTES' (format long)."""
     __tablename__ = "couts_flotte"
     __table_args__ = (
@@ -11,6 +12,7 @@ class CoutFlotte(Base):
     )
 
     id                     = Column(Integer, primary_key=True, index=True)
+    annee = colonne_annee()   # année du fichier importé (voir app/annee.py)
     type_location          = Column(String(100), nullable=True)
     fournisseur            = Column(String(150), nullable=True)
     type_vehicule          = Column(String(100), nullable=True)

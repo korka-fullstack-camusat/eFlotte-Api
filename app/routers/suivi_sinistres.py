@@ -1,10 +1,11 @@
 import io
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+from fastapi import Form, APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from ..database import get_db
+from ..annee import annee_courante, annee_par_defaut, lire_annee, remplacer_annee
 from ..models.suivi_sinistre import SuiviSinistre
 from ..models.import_global_log import ImportGlobalLog
 from ..models.user import User
@@ -132,7 +133,10 @@ def delete_sinistre(sid: int, db: Session = Depends(get_db), _=Depends(require_e
 
 
 @router.post("/import")
-async def import_sinistres(file: UploadFile = File(...), db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
+async def import_sinistres(file: UploadFile = File(...), annee: int | None = Form(None, description="Année du fichier importé"), db: Session = Depends(get_db), current_user: User = Depends(require_editor)):
+    # Fichier annuel : rangé dans l'année choisie, qui est remplacée (voir app/annee.py)
+    annee = lire_annee(annee) or annee_par_defaut()
+    annee_courante.set(annee)
     content = await file.read()
     try:
         xls = pd.ExcelFile(io.BytesIO(content))
@@ -190,6 +194,7 @@ async def import_sinistres(file: UploadFile = File(...), db: Session = Depends(g
     created = updated = 0
     errors = []
 
+    remplacer_annee(db, SuiviSinistre, annee)
     existing_map = {
         (s.matricule, s.date_declaration, s.circonstances): s
         for s in db.query(SuiviSinistre).all()

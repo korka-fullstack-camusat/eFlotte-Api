@@ -104,6 +104,42 @@ with engine.begin() as conn:
     """))
 print("✓ Colonnes à jour.")
 
+print("→ Données annuelles (colonne annee)...")
+# Table → expression donnant l'année des lignes existantes (sinon l'année en cours)
+ANNUELLES = {
+    "missions_chauffeur":      "EXTRACT(YEAR FROM date)",
+    "suivi_devis":             "EXTRACT(YEAR FROM date)",
+    "suivi_pannes":            "EXTRACT(YEAR FROM COALESCE(date, date_indisponibilite))",
+    "suivi_sinistres":         "EXTRACT(YEAR FROM COALESCE(date_sinistre, date_declaration))",
+    "pneumatiques":            "EXTRACT(YEAR FROM date_prevue)",
+    "couts_flotte":            "EXTRACT(YEAR FROM mois)",
+    "checklists_vl":           "NULL",
+    "entretiens_vehicule":     "NULL",
+    "entretiens_vehicule_bis": "NULL",
+}
+with engine.begin() as conn:
+    annee_en_cours = _dt.date.today().year
+    for table, expr in ANNUELLES.items():
+        conn.execute(sqlalchemy.text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS annee INTEGER"))
+        conn.execute(sqlalchemy.text(
+            f"UPDATE {table} SET annee = COALESCE({expr}, {annee_en_cours}) WHERE annee IS NULL"
+        ))
+        conn.execute(sqlalchemy.text(f"CREATE INDEX IF NOT EXISTS ix_{table}_annee ON {table} (annee)"))
+    # Une ligne par véhicule ET par année (au lieu d'une ligne par véhicule)
+    for table, nom in (("checklists_vl", "uq_checklists_vl_plaque_annee"),
+                       ("entretiens_vehicule", "uq_entretiens_vehicule_plaque_annee"),
+                       ("entretiens_vehicule_bis", "uq_entretiens_bis_plaque_annee")):
+        conn.execute(sqlalchemy.text(f"DROP INDEX IF EXISTS ix_{table}_plaque_immatriculation"))
+        conn.execute(sqlalchemy.text(f"CREATE INDEX IF NOT EXISTS ix_{table}_plaque_immatriculation ON {table} (plaque_immatriculation)"))
+        conn.execute(sqlalchemy.text(f"""
+            DO $$ BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = '{nom}') THEN
+                    ALTER TABLE {table} ADD CONSTRAINT {nom} UNIQUE (plaque_immatriculation, annee);
+                END IF;
+            END $$;
+        """))
+print("✓ Données annuelles prêtes.")
+
 db = SessionLocal()
 try:
     if not db.query(User).first():

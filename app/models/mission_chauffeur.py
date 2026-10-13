@@ -1,12 +1,14 @@
 from sqlalchemy import Column, Integer, String, Date, Text, Time
 from ..database import Base
+from ..annee import Annuel, colonne_annee
 
 
-class MissionChauffeur(Base):
+class MissionChauffeur(Annuel, Base):
     """Missions des chauffeurs des pôles — issu de la feuille 'CHAUFFEUR POLES'."""
     __tablename__ = "missions_chauffeur"
 
     id              = Column(Integer, primary_key=True, index=True)
+    annee = colonne_annee()   # année du fichier importé (voir app/annee.py)
     date            = Column(Date, index=True, nullable=False)
     immatriculation = Column(String(30), index=True, nullable=False)
     chauffeur       = Column(String(150), nullable=True)

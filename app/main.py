@@ -1,13 +1,14 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from .routers import (
     auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur,
     suivi_devis, checklists_vl, suivi_pannes, pneumatiques,
-    import_global, suivi_sinistres, carburant, inspections, comptes_chauffeurs,
+    import_global, suivi_sinistres, carburant, inspections, comptes_chauffeurs, annees,
 )
+from .annee import definir_annee_requete
 
 
 class _HealthCheckFilter(logging.Filter):
@@ -25,6 +26,8 @@ app = FastAPI(
     title="eFlotte — Camusat Sénégal",
     description="Gestion de la flotte automobile — suivi global, coûts, entretiens, pannes",
     version="1.0.0",
+    # ?annee= sur n'importe quelle requête : les données annuelles sont filtrées sur cette année
+    dependencies=[Depends(definir_annee_requete)],
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -52,6 +55,7 @@ app.include_router(suivi_sinistres.router)
 app.include_router(carburant.router)
 app.include_router(inspections.router)
 app.include_router(comptes_chauffeurs.router)
+app.include_router(annees.router)
 
 
 @app.get("/")

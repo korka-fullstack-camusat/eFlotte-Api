@@ -1,12 +1,14 @@
 from sqlalchemy import Column, Integer, String, Float, Date
 from ..database import Base
+from ..annee import Annuel, colonne_annee
 
 
-class SuiviDevis(Base):
+class SuiviDevis(Annuel, Base):
     """Suivi des devis — issu de la feuille 'SUIVI DES DEVIS'."""
     __tablename__ = "suivi_devis"
 
     id             = Column(Integer, primary_key=True, index=True)
+    annee = colonne_annee()   # année du fichier importé (voir app/annee.py)
     descriptions   = Column(String(100), index=True, nullable=True)
     numero_devis   = Column(String(150), nullable=True)
     valeur_devis   = Column(Float, nullable=True)

@@ -1,10 +1,11 @@
 import io
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import Form, APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..annee import annee_courante, annee_par_defaut, lire_annee, remplacer_annee
 from ..models.user import User
 from ..models.checklist_vl import CheckListVL
 from ..schemas.checklist_vl import (
@@ -138,9 +139,13 @@ def normalize_statut(v) -> str | None:
 @router.post("/import", response_model=ImportCheckListVLResult)
 async def import_checklists(
     file: UploadFile = File(...),
+    annee: int | None = Form(None, description="Année du fichier importé"),
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
+    # Fichier annuel : rangé dans l'année choisie, qui est remplacée (voir app/annee.py)
+    annee = lire_annee(annee) or annee_par_defaut()
+    annee_courante.set(annee)
     content = await file.read()
     try:
         xls = pd.ExcelFile(io.BytesIO(content))
@@ -167,6 +172,7 @@ async def import_checklists(
     def clean_str(v) -> str | None:
         return None if pd.isna(v) else str(v).strip()
 
+    remplacer_annee(db, CheckListVL, annee)
     seen_in_batch: dict[str, CheckListVL] = {c.plaque_immatriculation: c for c in db.query(CheckListVL).all()}
     touched: set[str] = set()
 

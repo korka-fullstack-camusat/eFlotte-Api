@@ -1,12 +1,13 @@
 import datetime
 from sqlalchemy import Column, Integer, String, Float, Date, Text, Index
 from ..database import Base
+from ..annee import Annuel
 
 def _current_year() -> int:
     return datetime.date.today().year
 
 
-class Carburant(Base):
+class Carburant(Annuel, Base):
     __tablename__ = "carburant"
 
     id              = Column(Integer, primary_key=True, index=True)

@@ -2,11 +2,12 @@ import io
 from datetime import date
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import Form, APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy import func, extract
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..annee import annee_courante, annee_par_defaut, lire_annee, remplacer_annee
 from ..models.user import User
 from ..models.cout_flotte import CoutFlotte
 from ..models.vehicule import Vehicule
@@ -388,9 +389,13 @@ def pivot_couts(
 @router.post("/import", response_model=ImportCoutsResult)
 async def import_couts(
     file: UploadFile = File(...),
+    annee: int | None = Form(None, description="Année du fichier importé"),
     db: Session = Depends(get_db),
     _: User = Depends(require_editor),
 ):
+    # Fichier annuel : rangé dans l'année choisie, qui est remplacée (voir app/annee.py)
+    annee = lire_annee(annee) or annee_par_defaut()
+    annee_courante.set(annee)
     content = await file.read()
     try:
         xls = pd.ExcelFile(io.BytesIO(content))
@@ -411,6 +416,8 @@ async def import_couts(
     updated = 0
     errors = []
 
+    remplacer_annee(db, CoutFlotte, annee)
+    hors_annee = 0
     existing_map = {
         (c.plaque_immatriculation, c.mois, c.type_cout): c
         for c in db.query(CoutFlotte).all()
@@ -425,6 +432,9 @@ async def import_couts(
                 continue
 
             mois: date = pd.to_datetime(mois_val).date().replace(day=1)
+            if mois.year != annee:
+                hors_annee += 1
+                continue
             type_cout = str(type_cout_val).strip().upper()
             valeur = float(row["Valeur"]) if not pd.isna(row["Valeur"]) else 0.0
 
@@ -456,5 +466,7 @@ async def import_couts(
         except Exception as e:
             errors.append({"ligne": int(idx) + 2, "message": str(e)})
 
+    if hors_annee:
+        errors.append({"ligne": 0, "message": f"{hors_annee} ligne(s) d'une autre année que {annee} ignorée(s)"})
     db.commit()
     return ImportCoutsResult(created=created, updated=updated, errors=errors)

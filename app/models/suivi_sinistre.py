@@ -1,11 +1,13 @@
 from sqlalchemy import Column, Integer, String, Date, Float, Boolean
 from ..database import Base
+from ..annee import Annuel, colonne_annee
 
 
-class SuiviSinistre(Base):
+class SuiviSinistre(Annuel, Base):
     __tablename__ = "suivi_sinistres"
 
     id                    = Column(Integer, primary_key=True, index=True)
+    annee = colonne_annee()   # année du fichier importé (voir app/annee.py)
     date_sinistre         = Column(Date, nullable=True)
     date_declaration      = Column(Date, nullable=True)
     type_location         = Column(String(100), nullable=True, index=True)  # LCD/LLD/CAMUSAT/AUTORENT
