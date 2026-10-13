@@ -360,23 +360,19 @@ async def import_carburant(
     df = xls.parse(sheet_name, header=header_row)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Auto-détection mois/annee depuis la colonne "Période" (format YYYY-MM)
+    # L'année est celle choisie à l'import (fichier annuel). Le mois est détecté
+    # depuis la colonne « Période » (AAAA-MM, ligne par ligne) ou le nom du fichier.
     periode_col = _get_col(df, "Période", "Periode", "PERIODE")
     if periode_col:
         for val in df[periode_col].dropna().astype(str):
             m = re.match(r"(\d{4})-(\d{2})", val.strip())
             if m:
-                annee = int(m.group(1))
-                mois  = int(m.group(2))
+                mois = int(m.group(2))
                 break
     else:
-        # Fallback : détection depuis nom de fichier / feuille
         detected_mois = _detect_mois(file.filename or "", xls, sheet_name)
         if detected_mois:
             mois = detected_mois
-        detected_annee = _detect_annee(file.filename or "", xls, sheet_name)
-        if detected_annee:
-            annee = detected_annee
 
     # Mapping des colonnes réelles → champs DB
     litres_col   = _get_col(df, "Litres consommés", "Litres", "QuantiteTotale")
