@@ -96,6 +96,7 @@ def list_carburant(
 def stats_carburant(
     car_group:      str | None = None,
     type_carburant: str | None = None,
+    matricule:      str | None = None,
     annee:          int | None = Query(None),
     mois:           int | None = Query(None, ge=1, le=12),
     db: Session = Depends(get_db),
@@ -106,6 +107,8 @@ def stats_carburant(
         q = q.filter(Carburant.car_group == car_group)
     if type_carburant:
         q = q.filter(func.upper(Carburant.type_carburant) == type_carburant.upper())
+    if matricule:
+        q = q.filter(func.upper(func.trim(Carburant.matricule)) == matricule.strip().upper())
     if mois is not None:
         q = q.filter(Carburant.mois == mois)
     if annee is not None:

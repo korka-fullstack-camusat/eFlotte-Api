@@ -7,7 +7,7 @@ from sqlalchemy import func, extract
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..annee import annee_courante, annee_par_defaut, lire_annee, remplacer_annee
+from ..annee import annee_courante, annee_par_defaut, lire_annee
 from ..models.user import User
 from ..models.cout_flotte import CoutFlotte
 from ..models.vehicule import Vehicule
@@ -402,71 +402,10 @@ async def import_couts(
     except Exception:
         raise HTTPException(400, "Fichier Excel illisible")
 
-    sheet_name = next((s for s in xls.sheet_names if "DATA_FLOTTE" in s.upper()), None)
-    if not sheet_name:
-        raise HTTPException(400, "Feuille 'DATA_FLOTTES' introuvable dans le fichier")
-
-    df = xls.parse(sheet_name)
-    required_cols = ["TYPE DE LOCATION", "Fournisseur", "Type Vehicule", "Plaque d'immatriculation", "Mois", "Type_Cout", "Valeur"]
-    missing = [c for c in required_cols if c not in df.columns]
-    if missing:
-        raise HTTPException(400, f"Colonnes manquantes dans '{sheet_name}': {', '.join(missing)}")
-
-    created = 0
-    updated = 0
-    errors = []
-
-    remplacer_annee(db, CoutFlotte, annee)
-    hors_annee = 0
-    existing_map = {
-        (c.plaque_immatriculation, c.mois, c.type_cout): c
-        for c in db.query(CoutFlotte).all()
-    }
-
-    for idx, row in df.iterrows():
-        try:
-            plaque = str(row["Plaque d'immatriculation"]).strip()
-            mois_val = row["Mois"]
-            type_cout_val = row["Type_Cout"]
-            if pd.isna(mois_val) or pd.isna(type_cout_val) or not plaque or plaque.lower() == "nan":
-                continue
-
-            mois: date = pd.to_datetime(mois_val).date().replace(day=1)
-            if mois.year != annee:
-                hors_annee += 1
-                continue
-            type_cout = str(type_cout_val).strip().upper()
-            valeur = float(row["Valeur"]) if not pd.isna(row["Valeur"]) else 0.0
-
-            type_location = None if pd.isna(row["TYPE DE LOCATION"]) else str(row["TYPE DE LOCATION"]).strip()
-            fournisseur = None if pd.isna(row["Fournisseur"]) else str(row["Fournisseur"]).strip()
-            type_vehicule = None if pd.isna(row["Type Vehicule"]) else str(row["Type Vehicule"]).strip()
-
-            key = (plaque, mois, type_cout)
-            existing = existing_map.get(key)
-            if existing:
-                existing.valeur = valeur
-                existing.type_location = type_location
-                existing.fournisseur = fournisseur
-                existing.type_vehicule = type_vehicule
-                updated += 1
-            else:
-                new_c = CoutFlotte(
-                    type_location=type_location,
-                    fournisseur=fournisseur,
-                    type_vehicule=type_vehicule,
-                    plaque_immatriculation=plaque,
-                    mois=mois,
-                    type_cout=type_cout,
-                    valeur=valeur,
-                )
-                db.add(new_c)
-                existing_map[key] = new_c
-                created += 1
-        except Exception as e:
-            errors.append({"ligne": int(idx) + 2, "message": str(e)})
-
-    if hors_annee:
-        errors.append({"ligne": 0, "message": f"{hors_annee} ligne(s) d'une autre année que {annee} ignorée(s)"})
-    db.commit()
-    return ImportCoutsResult(created=created, updated=updated, errors=errors)
+    # Même lecture que l'import global : « SUIVI GLOBALE DES COUTS » (tenu à jour chaque
+    # mois), sinon DATA_FLOTTES
+    from .import_global import _couts
+    r = _couts(xls, db)
+    if r.skipped:
+        raise HTTPException(400, r.skip_reason or "Feuille 'SUIVI GLOBALE DES COUTS' ou 'DATA_FLOTTES' introuvable")
+    return ImportCoutsResult(created=r.created, updated=r.updated, errors=r.errors)

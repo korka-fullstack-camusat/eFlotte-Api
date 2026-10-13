@@ -73,11 +73,21 @@ def list_sinistres(
 
 @router.get("/stats")
 def stats_sinistres(
+    mois:   int | None = Query(None, ge=1, le=12, description="Mois de la date du sinistre"),
+    plaque: str | None = Query(None, description="Matricule du véhicule"),
     db: Session = Depends(get_db),
     _=Depends(get_current_user),
 ):
     """Stats tableau de bord : répartition ACCIDENT / INCIDENT et par statut."""
-    rows = db.query(SuiviSinistre).all()
+    from sqlalchemy import extract, func
+    q = db.query(SuiviSinistre)
+    if mois:
+        q = q.filter(extract("month", SuiviSinistre.date_sinistre) == mois)
+    if plaque:
+        # Saisie libre (espaces doublés, plusieurs plaques par ligne) : comparaison sans espaces
+        cible = "".join(plaque.split()).upper()
+        q = q.filter(func.replace(func.upper(SuiviSinistre.matricule), " ", "").contains(cible))
+    rows = q.all()
     total = len(rows)
 
     # Répartition par circonstances

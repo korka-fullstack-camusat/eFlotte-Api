@@ -62,13 +62,22 @@ def filtres_devis(
 
 @router.get("/stats")
 def stats_devis(
+    mois:   int | None = Query(None, ge=1, le=12, description="Mois de la date du devis"),
+    plaque: str | None = Query(None, description="Matricule du véhicule"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """KPIs tableau de bord : coûts entretien/réparation + PO par fournisseur."""
-    from sqlalchemy import func as sqlfunc
+    from sqlalchemy import func as sqlfunc, extract
 
-    rows = db.query(SuiviDevis).all()
+    q = db.query(SuiviDevis)
+    if mois:
+        q = q.filter(extract("month", SuiviDevis.date) == mois)
+    if plaque:
+        # Saisie libre (espaces doublés, plusieurs plaques par ligne) : comparaison sans espaces
+        cible = "".join(plaque.split()).upper()
+        q = q.filter(sqlfunc.replace(sqlfunc.upper(SuiviDevis.matricule), " ", "").contains(cible))
+    rows = q.all()
 
     # Coût total entretien (descriptions contient "ENT" ou "ENTRETIEN")
     cout_entretien = sum(

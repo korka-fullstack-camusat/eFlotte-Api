@@ -3,6 +3,7 @@ Import global — lit le fichier Excel une seule fois et alimente
 automatiquement toutes les rubriques de l'application.
 """
 import io
+import re
 from datetime import date as DateType
 
 import pandas as pd
@@ -199,12 +200,53 @@ def _vehicules(xls: pd.ExcelFile, db: Session) -> SectionResult:
     return r
 
 
-def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
-    r = SectionResult()
+def _lignes_suivi_couts(xls: pd.ExcelFile) -> list[dict] | None:
+    """Feuille « SUIVI GLOBALE DES COUTS » (format large : une ligne par véhicule,
+    colonnes AAAA-MM_ASS, AAAA-MM_CARBURANT, …) convertie en lignes
+    (plaque, mois, type_cout, valeur). C'est le tableau tenu à jour chaque mois ;
+    DATA_FLOTTES n'en est qu'une copie, parfois en retard. None si la feuille manque."""
+    sheet = next((s for s in xls.sheet_names if "SUIVI GLOBAL" in s.upper() and "COUT" in s.upper()), None)
+    if not sheet:
+        return None
+    brut = xls.parse(sheet, header=None)
+    entete = next((i for i in range(min(len(brut), 15))
+                   if any("IMMATRICULATION" in str(v).upper() for v in brut.iloc[i].tolist())), None)
+    if entete is None:
+        return None
+    noms = [str(v).strip().upper() if not pd.isna(v) else "" for v in brut.iloc[entete].tolist()]
+    j_plaque = next(j for j, n in enumerate(noms) if "IMMATRICULATION" in n)
+    j_tl    = next((j for j, n in enumerate(noms) if n.startswith("TYPE DE LOCAT")), None)
+    j_four  = next((j for j, n in enumerate(noms) if n == "FOURNISSEUR"), None)
+    j_tv    = next((j for j, n in enumerate(noms) if n == "TYPE VEHICULE"), None)
+    colonnes = []
+    for j, n in enumerate(noms):
+        m = re.match(r"^(\d{4})-(\d{2})_([A-Z]+)$", n)   # COUT/KM (ratio) volontairement exclu
+        if m and 1 <= int(m.group(2)) <= 12:
+            colonnes.append((j, DateType(int(m.group(1)), int(m.group(2)), 1), m.group(3)))
+    lignes = []
+    for i in range(entete + 1, len(brut)):
+        plaque = _cs(brut.iat[i, j_plaque])
+        if not plaque or "TOTAL" in plaque.upper():
+            continue
+        infos = {
+            "type_location": _cs(brut.iat[i, j_tl]) if j_tl is not None else None,
+            "fournisseur":   _cs(brut.iat[i, j_four]) if j_four is not None else None,
+            "type_vehicule": _cs(brut.iat[i, j_tv]) if j_tv is not None else None,
+        }
+        for j, mois, type_cout in colonnes:
+            valeur = pd.to_numeric(brut.iat[i, j], errors="coerce")
+            if pd.isna(valeur) or valeur == 0:   # cellule vide : pas de coût ce mois-là
+                continue
+            lignes.append({"ligne": i + 1, "plaque": plaque, "mois": mois, "type_cout": type_cout,
+                           "valeur": float(valeur), **infos})
+    return lignes
+
+
+def _lignes_data_flottes(xls: pd.ExcelFile) -> tuple[list[dict] | None, str]:
+    """Feuille DATA_FLOTTES (format long : plaque, mois, type de coût, valeur)."""
     df, err = _parse_sheet(xls, "DATA_FLOTTE")
     if df is None:
-        r.skipped = True; r.skip_reason = err; return r
-
+        return None, err
     cols = list(df.columns)
     col_plaque   = _find_col(cols, "PLAQUE", "IMMATRICULATION")
     col_mois     = _find_col(cols, "MOIS")
@@ -213,54 +255,69 @@ def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
     col_tl       = _find_col(cols, "TYPE DE LOCATION", "TYPE DE LOCAT")
     col_fourn    = _find_col(cols, "FOURNISSEUR")
     col_tv       = _find_col(cols, "TYPE VEHICULE")
-
     if not all([col_plaque, col_mois, col_type, col_valeur]):
-        r.skipped = True
-        r.skip_reason = f"Colonnes manquantes parmi : plaque={col_plaque}, mois={col_mois}, type={col_type}, valeur={col_valeur}"
-        return r
+        return None, f"Colonnes manquantes parmi : plaque={col_plaque}, mois={col_mois}, type={col_type}, valeur={col_valeur}"
+    lignes = []
+    for idx, row in df.iterrows():
+        plaque = _cs(row[col_plaque])
+        mois_val, type_cout_val = row[col_mois], row[col_type]
+        if not plaque or pd.isna(mois_val) or pd.isna(type_cout_val):
+            continue
+        try:
+            mois = pd.to_datetime(mois_val).date().replace(day=1)
+        except (TypeError, ValueError):
+            continue
+        lignes.append({
+            "ligne": int(idx) + 2, "plaque": plaque, "mois": mois,
+            "type_cout": str(type_cout_val).strip().upper(),
+            "valeur": float(row[col_valeur]) if not pd.isna(row[col_valeur]) else 0.0,
+            "type_location": _cs(row[col_tl]) if col_tl else None,
+            "fournisseur":   _cs(row[col_fourn]) if col_fourn else None,
+            "type_vehicule": _cs(row[col_tv]) if col_tv else None,
+        })
+    return lignes, ""
 
-    remplacer_annee(db, CoutFlotte, annee_par_defaut())  # fichier annuel : remplace l'année importée
+
+def _couts(xls: pd.ExcelFile, db: Session) -> SectionResult:
+    r = SectionResult()
+    lignes = _lignes_suivi_couts(xls)
+    if not lignes:
+        lignes, err = _lignes_data_flottes(xls)
+        if lignes is None:
+            r.skipped = True; r.skip_reason = err; return r
+
+    annee = annee_par_defaut()
+    remplacer_annee(db, CoutFlotte, annee)  # fichier annuel : remplace l'année importée
     existing_map = {
         (c.plaque_immatriculation, c.mois, c.type_cout): c
         for c in db.query(CoutFlotte).all()
     }
 
     hors_annee = 0
-    for idx, row in df.iterrows():
+    for l in lignes:
         try:
-            plaque = _cs(row[col_plaque])
-            mois_val = row[col_mois]
-            type_cout_val = row[col_type]
-            if not plaque or pd.isna(mois_val) or pd.isna(type_cout_val):
-                continue
-            mois: DateType = pd.to_datetime(mois_val).date().replace(day=1)
-            if mois.year != annee_par_defaut():
+            if l["mois"].year != annee:
                 hors_annee += 1
                 continue
-            type_cout = str(type_cout_val).strip().upper()
-            valeur = float(row[col_valeur]) if not pd.isna(row[col_valeur]) else 0.0
-            type_location = _cs(row[col_tl]) if col_tl else None
-            fournisseur   = _cs(row[col_fourn]) if col_fourn else None
-            type_vehicule = _cs(row[col_tv]) if col_tv else None
-            key = (plaque, mois, type_cout)
+            key = (l["plaque"], l["mois"], l["type_cout"])
             existing = existing_map.get(key)
             if existing:
-                existing.valeur = valeur
-                existing.type_location = type_location
-                existing.fournisseur   = fournisseur
-                existing.type_vehicule = type_vehicule
+                existing.valeur = l["valeur"]
+                existing.type_location = l["type_location"]
+                existing.fournisseur   = l["fournisseur"]
+                existing.type_vehicule = l["type_vehicule"]
                 r.updated += 1
             else:
-                new_c = CoutFlotte(type_location=type_location, fournisseur=fournisseur,
-                                    type_vehicule=type_vehicule, plaque_immatriculation=plaque,
-                                    mois=mois, type_cout=type_cout, valeur=valeur)
+                new_c = CoutFlotte(type_location=l["type_location"], fournisseur=l["fournisseur"],
+                                    type_vehicule=l["type_vehicule"], plaque_immatriculation=l["plaque"],
+                                    mois=l["mois"], type_cout=l["type_cout"], valeur=l["valeur"])
                 db.add(new_c)
                 existing_map[key] = new_c
                 r.created += 1
         except Exception as e:
-            r.errors.append({"ligne": int(idx) + 2, "message": str(e)})
+            r.errors.append({"ligne": l["ligne"], "message": str(e)})
     if hors_annee:
-        r.errors.append({"ligne": 0, "message": f"{hors_annee} ligne(s) d'une autre année que {annee_par_defaut()} ignorée(s)"})
+        r.errors.append({"ligne": 0, "message": f"{hors_annee} ligne(s) d'une autre année que {annee} ignorée(s)"})
     db.commit()
     return r
 
