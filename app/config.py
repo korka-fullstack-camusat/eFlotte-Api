@@ -7,8 +7,10 @@ class Settings(BaseSettings):
 
     # Comptes chauffeurs importés en masse : mot de passe initial, à changer à la 1re connexion
     chauffeur_mot_de_passe_initial: str = "Camusat@2026"
-    # Adresse de la plateforme envoyée dans le SMS (ex : http://16.171.169.105)
+    # Adresse de la plateforme envoyée dans le SMS (ex : https://eflotte.camusatsn.com)
     app_url: str = ""
+    # Lien de téléchargement de l'application mobile Android (APK) : prioritaire sur app_url
+    app_mobile_url: str = ""
 
     # Orange SMS Pro Sénégal — SMS désactivés tant que login / token / clé sont vides.
     # Valeurs à mettre dans le .env du serveur uniquement.

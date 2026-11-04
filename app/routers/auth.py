@@ -11,7 +11,7 @@ from ..services.auth_service import (
     verify_password, hash_password, create_access_token,
     get_authenticated_user, get_current_user, require_admin,
 )
-from ..services.sms import normaliser_telephone
+from ..services.sms import client_sms, normaliser_telephone
 
 router = APIRouter(prefix="/api/auth", tags=["Authentification"])
 
@@ -53,6 +53,14 @@ class UserCreate(BaseModel):
     vehicule_plaque: str | None = None
     filiale:   str | None = None
     telephone: str | None = None
+    # Compte chauffeur : identifiants envoyés par SMS au numéro saisi
+    envoyer_sms: bool = True
+
+
+class UserCreeOut(UserOut):
+    """Compte créé + résultat de l'envoi des identifiants par SMS (chauffeurs)."""
+    sms: str | None = None            # ENVOYE | ECHEC | NON_CONFIGURE | SANS_NUMERO | None (non demandé)
+    sms_message: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -134,7 +142,7 @@ def changer_mot_de_passe(
     db.commit()
 
 
-@router.post("/users", response_model=UserOut, status_code=201)
+@router.post("/users", response_model=UserCreeOut, status_code=201)
 def create_user(
     data: UserCreate,
     db: Session = Depends(get_db),
@@ -161,9 +169,18 @@ def create_user(
         vehicule_plaque=_vide_en_none(data.vehicule_plaque),
         filiale=_vide_en_none(data.filiale),
         telephone=_telephone(data.telephone),
+        # Chauffeur : le mot de passe reçu par SMS est à remplacer à la 1re connexion
+        doit_changer_mdp=data.role == "CHAUFFEUR",
     )
     db.add(user); db.commit(); db.refresh(user)
-    return user
+    out = UserCreeOut.model_validate(user)
+    if data.role == "CHAUFFEUR" and data.envoyer_sms:
+        from .comptes_chauffeurs import envoyer_identifiants_sms
+        with client_sms() as client:
+            out.sms, out.sms_message = envoyer_identifiants_sms(user, client, data.password)
+        db.commit()
+        out.identifiants_envoyes_at = user.identifiants_envoyes_at
+    return out
 
 
 @router.get("/users", response_model=list[UserOut])

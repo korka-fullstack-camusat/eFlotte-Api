@@ -88,13 +88,16 @@ def _texte(val) -> str | None:
     return t or None
 
 
-def _envoyer(user: User, client: httpx.Client) -> tuple[str, str | None]:
+def envoyer_identifiants_sms(user: User, client: httpx.Client, mot_de_passe: str | None = None) -> tuple[str, str | None]:
+    """SMS avec identifiant + mot de passe (par défaut le mot de passe initial commun).
+    Statut : ENVOYE | ECHEC | NON_CONFIGURE | SANS_NUMERO. Ne fait pas le commit."""
     if not user.telephone:
         return "SANS_NUMERO", "Aucun numéro de téléphone"
     if not sms_actif():
         return "NON_CONFIGURE", "SMS non configurés sur le serveur"
     try:
-        envoyer_sms(user.telephone, message_identifiants(user.username, settings.chauffeur_mot_de_passe_initial), client)
+        mdp = mot_de_passe or settings.chauffeur_mot_de_passe_initial
+        envoyer_sms(user.telephone, message_identifiants(user.username, mdp), client)
         user.identifiants_envoyes_at = datetime.now(timezone.utc)
         return "ENVOYE", None
     except ErreurSMS as e:
@@ -233,7 +236,7 @@ async def importer(
     if envoyer and a_creer:
         with client_sms() as client:
             for res, user in a_creer:
-                res.sms, erreur = _envoyer(user, client)
+                res.sms, erreur = envoyer_identifiants_sms(user, client)
                 if erreur and res.sms == "ECHEC":
                     res.message = f"{res.message + ' · ' if res.message else ''}SMS : {erreur}"
         db.commit()
@@ -261,7 +264,7 @@ def renvoyer_identifiants(user_id: int, db: Session = Depends(get_db), _: User =
     user.hashed_password = hash_password(settings.chauffeur_mot_de_passe_initial)
     user.doit_changer_mdp = True
     with client_sms() as client:
-        statut, erreur = _envoyer(user, client)
+        statut, erreur = envoyer_identifiants_sms(user, client)
     db.commit()
     return ResultatIdentifiants(
         username=user.username, telephone=user.telephone,

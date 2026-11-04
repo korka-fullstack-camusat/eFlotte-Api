@@ -119,7 +119,8 @@ def client_sms() -> httpx.Client:
 
 def message_identifiants(username: str, mot_de_passe: str) -> str:
     """Texte sans accents (alphabet GSM : 1 SMS = 160 caractères au lieu de 70)."""
-    lien = settings.app_url.rstrip("/") or "la plateforme eFlotte"
+    # Téléchargement de l'app mobile si configuré, sinon la plateforme
+    lien = (settings.app_mobile_url or settings.app_url).rstrip("/") or "la plateforme eFlotte"
     return (
         f"eFlotte CAMUSAT: compte chauffeur cree. Lien: {lien} "
         f"Identifiant: {username} Mot de passe: {mot_de_passe} (a changer a la 1re connexion)"
