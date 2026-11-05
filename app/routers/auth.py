@@ -5,6 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from sqlalchemy import func
+from ..config import settings
 from ..database import get_db
 from ..models.user import User
 from ..services.auth_service import (
@@ -46,7 +47,8 @@ class UserOut(BaseModel):
 
 class UserCreate(BaseModel):
     username:  str
-    password:  str
+    # Chauffeur : facultatif, le mot de passe initial commun (Camusat@2026) est utilisé
+    password:  str | None = None
     full_name: str | None = None
     email:     str | None = None
     role:      str = "EDITOR"
@@ -61,6 +63,7 @@ class UserCreeOut(UserOut):
     """Compte créé + résultat de l'envoi des identifiants par SMS (chauffeurs)."""
     sms: str | None = None            # ENVOYE | ECHEC | NON_CONFIGURE | SANS_NUMERO | None (non demandé)
     sms_message: str | None = None
+    mot_de_passe_initial: str | None = None   # chauffeur : mot de passe envoyé (à transmettre si le SMS échoue)
 
 
 class UserUpdate(BaseModel):
@@ -155,8 +158,19 @@ def create_user(
         raise HTTPException(400, "Nom d'utilisateur déjà utilisé")
     if data.role not in VALID_ROLES:
         raise HTTPException(400, f"Rôle invalide. Valeurs possibles : {', '.join(sorted(VALID_ROLES))}")
-    if data.role == "CHAUFFEUR" and not _vide_en_none(data.filiale):
-        raise HTTPException(400, "La filiale est obligatoire pour un compte chauffeur")
+    chauffeur = data.role == "CHAUFFEUR"
+    telephone = _telephone(data.telephone)
+    if chauffeur:
+        # Chauffeur : identifiant, téléphone, véhicule. Mot de passe initial commun envoyé par SMS.
+        if not telephone:
+            raise HTTPException(400, "Le téléphone est obligatoire pour un compte chauffeur (il reçoit ses identifiants par SMS)")
+        if db.query(User).filter(User.telephone == telephone).first():
+            raise HTTPException(400, "Ce numéro de téléphone est déjà associé à un compte")
+        mot_de_passe = _vide_en_none(data.password) or settings.chauffeur_mot_de_passe_initial
+    else:
+        mot_de_passe = data.password or ""
+        if len(mot_de_passe) < 6:
+            raise HTTPException(400, "Mot de passe obligatoire (au moins 6 caractères)")
     email = _vide_en_none(data.email)
     if email and db.query(User).filter(User.email == email).first():
         raise HTTPException(400, "Email déjà utilisé par un autre compte")
@@ -164,20 +178,22 @@ def create_user(
         username=data.username,
         full_name=_vide_en_none(data.full_name),
         email=email,
-        hashed_password=hash_password(data.password),
+        hashed_password=hash_password(mot_de_passe),
         role=data.role,
         vehicule_plaque=_vide_en_none(data.vehicule_plaque),
         filiale=_vide_en_none(data.filiale),
-        telephone=_telephone(data.telephone),
+        telephone=telephone,
         # Chauffeur : le mot de passe reçu par SMS est à remplacer à la 1re connexion
-        doit_changer_mdp=data.role == "CHAUFFEUR",
+        doit_changer_mdp=chauffeur,
     )
     db.add(user); db.commit(); db.refresh(user)
     out = UserCreeOut.model_validate(user)
-    if data.role == "CHAUFFEUR" and data.envoyer_sms:
+    if chauffeur:
+        out.mot_de_passe_initial = mot_de_passe
+    if chauffeur and data.envoyer_sms:
         from .comptes_chauffeurs import envoyer_identifiants_sms
         with client_sms() as client:
-            out.sms, out.sms_message = envoyer_identifiants_sms(user, client, data.password)
+            out.sms, out.sms_message = envoyer_identifiants_sms(user, client, mot_de_passe)
         db.commit()
         out.identifiants_envoyes_at = user.identifiants_envoyes_at
     return out
@@ -216,8 +232,6 @@ def update_user(
         user.filiale = _vide_en_none(data.filiale)
     if data.telephone is not None:
         user.telephone = _telephone(data.telephone)
-    if user.role == "CHAUFFEUR" and not user.filiale:
-        raise HTTPException(400, "La filiale est obligatoire pour un compte chauffeur")
     if data.is_active is not None:
         user.is_active = data.is_active
     if data.password:
