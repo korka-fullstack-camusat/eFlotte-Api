@@ -163,10 +163,16 @@ def client_sms() -> httpx.Client:
 
 
 def message_identifiants(username: str, mot_de_passe: str) -> str:
-    """Texte sans accents (alphabet GSM : 1 SMS = 160 caractères au lieu de 70)."""
-    # Téléchargement de l'app mobile si configuré, sinon la plateforme
-    lien = (settings.app_mobile_url or settings.app_url).rstrip("/") or "la plateforme eFlotte"
+    """SMS envoyé à la création d'un compte chauffeur (et par « Envoyer les identifiants »).
+    Les accents utilisés (é, è, à) font partie de l'alphabet SMS standard (GSM 03.38)."""
     return (
-        f"eFlotte CAMUSAT: compte chauffeur cree. Lien: {lien} "
-        f"Identifiant: {username} Mot de passe: {mot_de_passe} (a changer a la 1re connexion)"
+        "Bonjour,\n"
+        "Votre compte eFlotte a été créé avec succès.\n"
+        "Vos identifiants de connexion :\n"
+        f"- Identifiant : {username}\n"
+        f"- Mot de passe : {mot_de_passe}\n"
+        "Connectez-vous à la plateforme avec ces identifiants.\n"
+        "Important : Pour des raisons de sécurité, veuillez modifier votre mot de passe "
+        "dès votre première connexion.\n"
+        "Bienvenue sur eFlotte !"
     )
