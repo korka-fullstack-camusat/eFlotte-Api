@@ -137,14 +137,26 @@ def creer_demande(
 
 @router.get("/mes", response_model=DemandePage)
 def mes_demandes(
+    q: str | None = Query(None, description="Recherche : type, nature, immatriculation, position, technicien"),
     page: int = Query(1, ge=1),
     page_size: int = Query(15, ge=1, le=100),
     db: Session = Depends(get_db),
     user: User = Depends(require_chauffeur),
 ):
-    q = db.query(DemandeVehicule).filter(DemandeVehicule.user_id == user.id)
-    total = q.count()
-    items = q.order_by(DemandeVehicule.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    req = db.query(DemandeVehicule).filter(DemandeVehicule.user_id == user.id)
+    if q and q.strip():
+        motif = f"%{q.strip()}%"
+        texte = q.strip().lower()
+        # « panne », « vidange », « remontee » / « remontée » : recherche aussi par type
+        natures = [code for code, libelle in NATURES_DEMANDE.items()
+                   if texte in libelle.lower() or texte in code.lower()]
+        conditions = [DemandeVehicule.immatriculation.ilike(motif), DemandeVehicule.description.ilike(motif),
+                      DemandeVehicule.position.ilike(motif), DemandeVehicule.technicien.ilike(motif)]
+        if natures:
+            conditions.append(DemandeVehicule.nature.in_(natures))
+        req = req.filter(or_(*conditions))
+    total = req.count()
+    items = req.order_by(DemandeVehicule.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return DemandePage(items=items, total=total)
 
 

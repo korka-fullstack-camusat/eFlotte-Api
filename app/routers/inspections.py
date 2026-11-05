@@ -12,7 +12,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
-from ..models.demande import NotificationChauffeur, PushToken
+from ..models.demande import DemandeVehicule, NotificationChauffeur, PushToken
 from ..models.inspection import PhotoInspection, RapportInspection, RelanceChecklist
 from ..models.user import User
 from ..models.vehicule import Vehicule
@@ -308,11 +308,31 @@ def mes_notifications(
     db: Session = Depends(get_db),
     user: User = Depends(require_chauffeur),
 ):
-    """Dernières notifications du chauffeur (relances, suivi de ses demandes…)."""
-    q = db.query(NotificationChauffeur).filter(NotificationChauffeur.user_id == user.id)
-    non_lues = q.filter(NotificationChauffeur.lue_at.is_(None)).count()
-    items = q.order_by(NotificationChauffeur.created_at.desc(), NotificationChauffeur.id.desc()).limit(limite).all()
-    return NotificationsOut(items=items, non_lues=non_lues)
+    """Notifications utiles du chauffeur. Ne sont plus affichées :
+    - une relance de checklist une fois une checklist envoyée après elle ;
+    - le suivi d'une demande une fois la demande traitée."""
+    recentes = (
+        db.query(NotificationChauffeur).filter(NotificationChauffeur.user_id == user.id)
+        .order_by(NotificationChauffeur.created_at.desc(), NotificationChauffeur.id.desc()).limit(200).all()
+    )
+    dernier_rapport = db.query(func.max(RapportInspection.created_at)).filter(RapportInspection.user_id == user.id).scalar()
+    ids_demandes = {int(n.data["demande_id"]) for n in recentes
+                    if n.type == "DEMANDE" and isinstance(n.data, dict) and str(n.data.get("demande_id", "")).isdigit()}
+    traitees = {i for (i,) in db.query(DemandeVehicule.id).filter(
+        DemandeVehicule.id.in_(ids_demandes), DemandeVehicule.statut == "TRAITEE").all()} if ids_demandes else set()
+
+    def utile(n: NotificationChauffeur) -> bool:
+        if n.type == "RELANCE" and dernier_rapport and n.created_at and n.created_at <= dernier_rapport:
+            return False
+        if n.type == "DEMANDE" and isinstance(n.data, dict):
+            ident = str(n.data.get("demande_id", ""))
+            if ident.isdigit() and int(ident) in traitees:
+                return False
+        return True
+
+    visibles = [n for n in recentes if utile(n)]
+    non_lues = sum(1 for n in visibles if n.lue_at is None)
+    return NotificationsOut(items=visibles[:limite], non_lues=non_lues)
 
 
 @router.post("/notifications/lues", status_code=204)
