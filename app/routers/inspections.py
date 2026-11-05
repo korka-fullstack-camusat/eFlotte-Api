@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
-from sqlalchemy import func, or_
+from sqlalchemy import String, and_, func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -371,17 +371,54 @@ def vehicules_disponibles(db: Session = Depends(get_db), _: User = Depends(requi
     return [_avec_visite(v, visites) for v in db.query(Vehicule).order_by(Vehicule.plaque_immatriculation).all()]
 
 
+def _filtre_recherche_rapport(texte: str):
+    """Condition SQL pour la recherche du chauffeur dans ses rapports."""
+    t = texte.lower()
+    motif = f"%{texte}%"
+    conditions = [RapportInspection.immatriculation.ilike(motif)]
+    cle = "".join(c for c in texte.upper() if c.isalnum())
+    if cle:
+        conditions.append(func.upper(func.replace(func.replace(RapportInspection.immatriculation, " ", ""), "-", "")).like(f"%{cle}%"))
+    for code in TYPES_RAPPORT:
+        if t in code.lower():
+            conditions.append(RapportInspection.type_rapport == code)
+    if "critique" in t:
+        conditions.append(RapportInspection.nb_critiques > 0)
+    if "anomal" in t or "non conforme" in t:
+        conditions.append(RapportInspection.nb_non_conformes > 0)
+    elif "conforme" in t:
+        conditions.append(RapportInspection.nb_non_conformes == 0)
+    # Date : 05/11, 05/11/2026, 05-11-2026, 2026-11-05
+    morceaux = [m for m in texte.replace("-", "/").replace(".", "/").split("/") if m.isdigit()]
+    try:
+        if len(morceaux) == 3:
+            j, m, a = (morceaux[2], morceaux[1], morceaux[0]) if len(morceaux[0]) == 4 else morceaux
+            conditions.append(RapportInspection.date_rapport == date(int(a), int(m), int(j)))
+        elif len(morceaux) == 2 and "/" in texte.replace("-", "/"):
+            conditions.append(and_(func.extract("day", RapportInspection.date_rapport) == int(morceaux[0]),
+                                   func.extract("month", RapportInspection.date_rapport) == int(morceaux[1])))
+    except ValueError:
+        pass
+    if texte.replace(" ", "").isdigit() and len(texte.replace(" ", "")) >= 3:
+        conditions.append(func.cast(RapportInspection.kilometrage, String).like(f"%{texte.replace(' ', '')}%"))
+    return or_(*conditions)
+
+
 @router.get("/mes-rapports", response_model=RapportPage)
 def mes_rapports(
+    q: str | None = Query(None, description="Recherche : plaque, date (JJ/MM ou JJ/MM/AAAA), "
+                                            "inspection / restitution, conforme / anomalie / critique, kilométrage"),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
     user: User = Depends(require_chauffeur),
 ):
-    q = db.query(RapportInspection).filter(RapportInspection.user_id == user.id)
-    total = q.count()
+    req = db.query(RapportInspection).filter(RapportInspection.user_id == user.id)
+    if q and q.strip():
+        req = req.filter(_filtre_recherche_rapport(q.strip()))
+    total = req.count()
     items = (
-        q.order_by(RapportInspection.created_at.desc())
+        req.order_by(RapportInspection.created_at.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
         .all()
