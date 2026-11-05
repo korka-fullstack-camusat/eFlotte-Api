@@ -17,8 +17,8 @@ class Settings(BaseSettings):
     orange_sms_login: str = ""
     orange_sms_token: str = ""
     orange_sms_access_key: str = ""
-    orange_sms_signature: str = "CAMUSAT NOC"     # nom d'expéditeur affiché sur le téléphone
-    orange_sms_base_url: str = "https://api.orangesmspro.sn:8443/api/json"
+    orange_sms_signature: str = "CAMUSAT SN"     # nom d'expéditeur affiché sur le téléphone
+    orange_sms_base_url: str = "https://api.orangesmspro.sn:8443/api"
     orange_sms_verify_ssl: bool = True
 
     # .env contient aussi les variables du docker-compose (POSTGRES_*, DB_PORT…)
