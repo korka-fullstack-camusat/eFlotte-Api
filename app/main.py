@@ -22,6 +22,19 @@ class _HealthCheckFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
 
+# Logs de l'application (envoi des SMS…) visibles dans `docker logs` : sans handler,
+# les messages « info » de nos modules seraient ignorés par gunicorn / uvicorn.
+_log = logging.getLogger("eflotte")
+if not _log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    _log.addHandler(_h)
+    _log.setLevel(logging.INFO)
+    _log.propagate = False
+
+from .services.sms import resume_configuration  # noqa: E402
+_log.info(resume_configuration())
+
 app = FastAPI(
     title="eFlotte — Camusat Sénégal",
     description="Gestion de la flotte automobile — suivi global, coûts, entretiens, pannes",

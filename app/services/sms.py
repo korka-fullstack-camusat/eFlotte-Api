@@ -29,6 +29,17 @@ class ErreurSMS(Exception):
     pass
 
 
+def resume_configuration() -> str:
+    """Configuration SMS lue au démarrage (sans le token ni la clé)."""
+    if not sms_actif():
+        manquants = [n for n, v in (("ORANGE_SMS_LOGIN", settings.orange_sms_login),
+                                    ("ORANGE_SMS_TOKEN", settings.orange_sms_token),
+                                    ("ORANGE_SMS_ACCESS_KEY", settings.orange_sms_access_key)) if not v]
+        return f"SMS désactivés : {', '.join(manquants)} absent(s) du .env"
+    return (f"SMS actifs : login={settings.orange_sms_login} signature=« {settings.orange_sms_signature} » "
+            f"url={settings.orange_sms_base_url} verify_ssl={settings.orange_sms_verify_ssl}")
+
+
 def sms_actif() -> bool:
     return bool(settings.orange_sms_login and settings.orange_sms_token and settings.orange_sms_access_key)
 
@@ -101,12 +112,18 @@ def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None
             headers={"Accept": "application/json"},
         )
     except httpx.HTTPError as e:
-        raise ErreurSMS(f"Orange SMS Pro injoignable : {e.__class__.__name__}")
+        # Cause exacte (certificat SSL refusé, délai dépassé, connexion refusée…) : visible
+        # dans le message affiché sur la plateforme et dans les logs du conteneur
+        cause = str(e).strip() or e.__class__.__name__
+        if "CERTIFICATE_VERIFY_FAILED" in cause or "SSL" in cause.upper():
+            cause += " — certificat du serveur Orange refusé (essayer ORANGE_SMS_VERIFY_SSL=False)"
+        log.warning("SMS vers %s : échec de connexion à %s : %s", destinataire[:5] + "…", settings.orange_sms_base_url, cause)
+        raise ErreurSMS(f"Orange SMS Pro injoignable : {e.__class__.__name__} : {cause[:300]}")
     finally:
         if propre:
             client.close()
     erreur = _reponse_en_erreur(r)
-    log.info("SMS vers %s : HTTP %s %s", destinataire[:5] + "…", r.status_code, r.text[:200])
+    (log.warning if erreur else log.info)("SMS vers %s : HTTP %s %s", destinataire[:5] + "…", r.status_code, r.text[:300])
     if erreur:
         raise ErreurSMS(erreur)
     return r.text[:300]
