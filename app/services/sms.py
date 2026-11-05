@@ -171,7 +171,6 @@ def message_identifiants(username: str, mot_de_passe: str) -> str:
         "Vos identifiants de connexion :\n"
         f"- Identifiant : {username}\n"
         f"- Mot de passe : {mot_de_passe}\n"
-        "Connectez-vous à la plateforme avec ces identifiants.\n"
         "Important : Pour des raisons de sécurité, veuillez modifier votre mot de passe "
         "dès votre première connexion.\n"
         "Bienvenue sur eFlotte !"
