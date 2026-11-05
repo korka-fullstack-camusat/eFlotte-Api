@@ -5,8 +5,13 @@
 #
 # Puis dans eFlotte-Front : docker compose -f docker-compose.prod.yml up -d --build
 #
-# Seuls 80 et 443 sont ouverts. La base n'écoute que sur 127.0.0.1 (accès par
-# tunnel SSH), l'API n'est joignable que via Caddy sur /api.
+# Seul Caddy est ouvert (80 / 443 par défaut, ou CADDY_HTTP_PORT / CADDY_HTTPS_PORT).
+# La base n'écoute que sur 127.0.0.1 (accès par tunnel SSH), l'API n'est joignable
+# que via Caddy sur /api.
+#
+# Serveur où 80 / 443 sont déjà pris par un autre proxy (nginx…) qui gère le HTTPS :
+#   CADDY_HTTP_PORT=8050, CADDY_HTTPS_PORT=8443, SITE_ADDRESS=:80 dans .env,
+#   puis ce proxy renvoie le domaine vers http://127.0.0.1:8050.
 
 name: eflotte
 
@@ -73,8 +78,10 @@ services:
     container_name: eflotte-caddy
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      # Port de l'hôte : 80 par défaut ; 8050 si 80 est déjà utilisé sur le serveur
+      - "${CADDY_HTTP_PORT:-80}:80"
+      # HTTPS géré par Caddy seulement si SITE_ADDRESS est un nom de domaine
+      - "${CADDY_HTTPS_PORT:-443}:443"
     environment:
       # ":80" = accès par l'IP en HTTP ; un nom de domaine = HTTPS automatique
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}

@@ -89,6 +89,32 @@ gunzip -c ~/sauvegardes/eflotte-AAAA-MM-JJ_HHMM.sql.gz | docker exec -i eflotte-
 
 Caddy obtient et renouvelle le certificat tout seul (ports 80 et 443 ouverts).
 
+## 8. Serveur où les ports 80 / 443 sont déjà utilisés
+
+Si un autre proxy (nginx, Apache…) occupe déjà 80 / 443 et gère le HTTPS du domaine :
+
+1. Dans `~/eFlotte-Api/.env` :
+   ```
+   SITE_ADDRESS=:80
+   CADDY_HTTP_PORT=8050
+   CADDY_HTTPS_PORT=8443
+   ```
+2. `docker compose -f docker-compose.prod.yml up -d --build`
+   → la plateforme (site + `/api`) répond sur `http://127.0.0.1:8050`.
+3. Dans l'autre proxy, faire pointer le domaine vers ce port. Exemple nginx :
+   ```nginx
+   location / {
+       proxy_pass http://127.0.0.1:8050;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       client_max_body_size 40M;   # 6 photos de la checklist mobile
+   }
+   ```
+   puis `sudo nginx -t && sudo systemctl reload nginx`.
+
+Le port 8050 n'a pas besoin d'être ouvert dans le pare-feu / groupe de sécurité : seul l'autre proxy y accède.
+
 ## Commandes utiles
 
 ```bash
