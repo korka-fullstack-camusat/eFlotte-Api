@@ -68,65 +68,138 @@ def normaliser_telephone(brut) -> str | None:
     return None
 
 
-def _reponse_en_erreur(r: httpx.Response) -> str | None:
-    """Message d'erreur si la réponse d'Orange signale un échec, sinon None."""
+CODES_SUCCES = {0, 200}
+CODE_CLE_INVALIDE = 121
+
+
+def _statuts_orange(data) -> list[tuple[int | None, str]]:
+    """(code, texte) de chaque « status » trouvé dans la réponse JSON d'Orange
+    ({"responses": {"response": [{"status": {"status_CODE": 121, "status_TEXT": …}}]}})."""
+    trouves: list[tuple[int | None, str]] = []
+
+    def parcourir(v):
+        if isinstance(v, dict):
+            bas = {str(k).lower(): val for k, val in v.items()}
+            if "status_code" in bas:
+                try:
+                    code = int(bas["status_code"])
+                except (TypeError, ValueError):
+                    code = None
+                trouves.append((code, str(bas.get("status_text") or "")))
+            for val in v.values():
+                parcourir(val)
+        elif isinstance(v, list):
+            for val in v:
+                parcourir(val)
+
+    parcourir(data)
+    return trouves
+
+
+def _reponse_en_erreur(r: httpx.Response) -> tuple[int | None, str] | None:
+    """(code Orange, message) si la réponse signale un échec, sinon None.
+    Orange répond HTTP 200 même en cas d'erreur : le code est dans status_CODE."""
     if r.status_code >= 400:
-        return f"HTTP {r.status_code} : {r.text[:200]}"
+        return None, f"HTTP {r.status_code} : {r.text[:500]}"
     try:
         data = r.json()
     except ValueError:
-        return None if r.text.strip() else "Réponse vide"
+        return None if r.text.strip() else (None, "Réponse vide d'Orange")
+    for code, texte in _statuts_orange(data):
+        if code is not None and code not in CODES_SUCCES:
+            return code, f"Refusé par Orange (code {code}) : {texte}"
     if isinstance(data, dict):
         statut = str(data.get("status", data.get("STATUS", ""))).upper()
         if data.get("error") or data.get("ERROR") or statut in ("ERROR", "FAILED", "KO"):
-            return f"Refusé par Orange : {str(data)[:200]}"
+            return None, f"Refusé par Orange : {str(data)[:500]}"
     return None
+
+
+# Calcul de la clé (paramètre « key » = HMAC) : Orange ne publie pas sa documentation.
+# La 1re variante est celle d'origine ; si Orange répond 121 (« KEY invalide »), les
+# suivantes sont essayées une à une (une requête refusée n'envoie aucun SMS) et celle
+# qui est acceptée est retenue pour la suite (et écrite dans les logs).
+# Chaque variante : (nom, ordre des champs concaténés, secret HMAC, algorithme, paramètre algo)
+VARIANTES_CLE = [
+    ("sha1-token-subject-signature-recipient-content-timestamp/access_key",
+     ("token", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha1", None),
+    ("sha1-…/token",
+     ("token", "subject", "signature", "recipient", "content", "timestamp"), "token", "sha1", None),
+    ("sha1-sans-token/access_key",
+     ("subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha1", None),
+    ("sha1-login-subject-signature-recipient-content-timestamp/access_key",
+     ("login", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha1", None),
+    ("md5-token-subject-signature-recipient-content-timestamp/access_key",
+     ("token", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "md5", "md5"),
+    ("sha256-token-subject-signature-recipient-content-timestamp/access_key",
+     ("token", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha256", "sha256"),
+]
+_variante_retenue: int | None = None
+
+
+def _champs(variante, destinataire: str, message: str, sujet: str) -> dict:
+    _nom, ordre, secret, algo, param_algo = variante
+    valeurs = {
+        "token": settings.orange_sms_token, "login": settings.orange_sms_login,
+        "subject": sujet, "signature": settings.orange_sms_signature,
+        "recipient": destinataire, "content": message, "timestamp": str(int(time.time())),
+    }
+    cle_secrete = settings.orange_sms_access_key if secret == "access_key" else settings.orange_sms_token
+    a_signer = "".join(valeurs[c] for c in ordre)
+    cle = hmac.new(cle_secrete.encode("utf-8"), a_signer.encode("utf-8"), getattr(hashlib, algo)).hexdigest()
+    champs = {k: valeurs[k] for k in ("token", "subject", "signature", "recipient", "content", "timestamp")}
+    champs["key"] = cle
+    if param_algo:
+        champs["algo"] = param_algo
+    return champs
 
 
 def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None,
                 sujet: str = "eFlotte") -> str:
-    """Envoie un SMS. Renvoie la réponse brute d'Orange (tronquée) ; lève ErreurSMS
-    avec un message lisible en cas d'échec."""
+    """Envoie un SMS. Renvoie la réponse brute d'Orange ; lève ErreurSMS avec un
+    message lisible en cas d'échec."""
+    global _variante_retenue
     if not sms_actif():
         raise ErreurSMS("SMS non configurés (ORANGE_SMS_LOGIN / TOKEN / ACCESS_KEY absents)")
     destinataire = telephone.lstrip("+")
-    token, signature = settings.orange_sms_token, settings.orange_sms_signature
-    horodatage = str(int(time.time()))
-    cle = hmac.new(
-        settings.orange_sms_access_key.encode(),
-        (token + sujet + signature + destinataire + message + horodatage).encode(),
-        hashlib.sha1,
-    ).hexdigest()
-    champs = {
-        "token": token, "subject": sujet, "signature": signature,
-        "recipient": destinataire, "content": message,
-        "timestamp": horodatage, "key": cle,
-    }
     propre = client is None
     client = client or httpx.Client(timeout=30, verify=settings.orange_sms_verify_ssl)
+    ordre = ([_variante_retenue] if _variante_retenue is not None else []) + \
+        [i for i in range(len(VARIANTES_CLE)) if i != _variante_retenue]
     try:
-        r = client.post(
-            settings.orange_sms_base_url,
-            data=champs,
-            auth=(settings.orange_sms_login, token),
-            headers={"Accept": "application/json"},
-        )
-    except httpx.HTTPError as e:
-        # Cause exacte (certificat SSL refusé, délai dépassé, connexion refusée…) : visible
-        # dans le message affiché sur la plateforme et dans les logs du conteneur
-        cause = str(e).strip() or e.__class__.__name__
-        if "CERTIFICATE_VERIFY_FAILED" in cause or "SSL" in cause.upper():
-            cause += " — certificat du serveur Orange refusé (essayer ORANGE_SMS_VERIFY_SSL=False)"
-        log.warning("SMS vers %s : échec de connexion à %s : %s", destinataire[:5] + "…", settings.orange_sms_base_url, cause)
-        raise ErreurSMS(f"Orange SMS Pro injoignable : {e.__class__.__name__} : {cause[:300]}")
+        erreur = None
+        for i in ordre:
+            variante = VARIANTES_CLE[i]
+            try:
+                r = client.post(
+                    settings.orange_sms_base_url,
+                    data=_champs(variante, destinataire, message, sujet),
+                    auth=(settings.orange_sms_login, settings.orange_sms_token),
+                    headers={"Accept": "application/json"},
+                )
+            except httpx.HTTPError as e:
+                # Cause exacte (certificat SSL refusé, délai dépassé, connexion refusée…)
+                cause = str(e).strip() or e.__class__.__name__
+                if "CERTIFICATE_VERIFY_FAILED" in cause or "SSL" in cause.upper():
+                    cause += " — certificat du serveur Orange refusé (essayer ORANGE_SMS_VERIFY_SSL=False)"
+                log.warning("SMS vers %s : échec de connexion à %s : %s", destinataire[:5] + "…", settings.orange_sms_base_url, cause)
+                raise ErreurSMS(f"Orange SMS Pro injoignable : {e.__class__.__name__} : {cause[:300]}")
+            erreur = _reponse_en_erreur(r)
+            if not erreur:
+                if _variante_retenue != i:
+                    log.warning("SMS : calcul de clé accepté par Orange = variante « %s »", variante[0])
+                _variante_retenue = i
+                log.info("SMS vers %s : HTTP %s %s", destinataire[:5] + "…", r.status_code, r.text[:1000])
+                return r.text[:1000]
+            code, texte = erreur
+            log.warning("SMS vers %s : variante « %s » refusée : HTTP %s %s",
+                        destinataire[:5] + "…", variante[0], r.status_code, r.text[:1500])
+            if code != CODE_CLE_INVALIDE:
+                break     # autre erreur que la clé : inutile d'essayer d'autres calculs
+        raise ErreurSMS(erreur[1] if erreur else "Échec de l'envoi")
     finally:
         if propre:
             client.close()
-    erreur = _reponse_en_erreur(r)
-    (log.warning if erreur else log.info)("SMS vers %s : HTTP %s %s", destinataire[:5] + "…", r.status_code, r.text[:300])
-    if erreur:
-        raise ErreurSMS(erreur)
-    return r.text[:300]
 
 
 def client_sms() -> httpx.Client:
