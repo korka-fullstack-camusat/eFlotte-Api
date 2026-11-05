@@ -180,6 +180,15 @@ def _ids_a_jour(db: Session, debut: date) -> set[int]:
     return {r[0] for r in rows}
 
 
+def _vehicule_par_plaque_souple(db: Session, plaque: str) -> Vehicule | None:
+    """Même plaque écrite autrement (« aa-512-ys », « AA512YS »…)."""
+    cle = "".join(c for c in plaque.upper() if c.isalnum())
+    if not cle:
+        return None
+    colonne = func.upper(func.replace(func.replace(Vehicule.plaque_immatriculation, " ", ""), "-", ""))
+    return db.query(Vehicule).filter(colonne == cle).first()
+
+
 def _vehicule_mini(db: Session, plaque: str | None) -> Vehicule | None:
     if not plaque:
         return None
@@ -382,12 +391,16 @@ async def envoyer_rapport(
     if type_rapport not in TYPES_RAPPORT:
         raise HTTPException(400, "Type de rapport invalide")
 
-    # Le véhicule est celui du compte. S'il n'y en a pas encore, celui choisi
-    # dans ce premier rapport est enregistré sur le compte pour les suivants.
-    plaque = user.vehicule_plaque or str(payload.get("immatriculation") or "").strip()
-    vehicule = _vehicule_mini(db, plaque)
-    if not vehicule:
-        raise HTTPException(400, "Véhicule introuvable dans la flotte")
+    # Immatriculation saisie par le chauffeur (préremplie avec celle de son compte).
+    # Reconnue dans la flotte sans tenir compte des espaces, tirets ni majuscules ;
+    # une plaque absente de la flotte est gardée telle quelle (marque / modèle vides).
+    plaque = " ".join(str(payload.get("immatriculation") or "").upper().split()) or (user.vehicule_plaque or "")
+    if not plaque:
+        raise HTTPException(400, "Immatriculation manquante")
+    if len(plaque) > 30:
+        raise HTTPException(400, "Immatriculation invalide")
+    vehicule = _vehicule_mini(db, plaque) or _vehicule_par_plaque_souple(db, plaque)
+    immatriculation = vehicule.plaque_immatriculation if vehicule else plaque
 
     try:
         kilometrage = int(payload.get("kilometrage"))
@@ -403,7 +416,7 @@ async def envoyer_rapport(
             raise HTTPException(400, "Date de visite technique invalide")
     else:
         # Déjà connue : le formulaire ne la redemande pas, on reprend la dernière relevée
-        visite_technique = _visites_techniques(db, [vehicule.plaque_immatriculation]).get(vehicule.plaque_immatriculation)
+        visite_technique = _visites_techniques(db, [immatriculation]).get(immatriculation)
 
     try:
         reponses, nb_nc, nb_crit = valider_reponses(payload.get("reponses") or {})
@@ -440,16 +453,16 @@ async def envoyer_rapport(
         .order_by(RapportInspection.created_at.desc()).first()
     )
     filiale = user.filiale or (precedent[0] if precedent else None)
-    if not user.vehicule_plaque:
+    if not user.vehicule_plaque and vehicule:
         user.vehicule_plaque = vehicule.plaque_immatriculation
 
     rapport = RapportInspection(
         user_id=user.id,
         type_rapport=type_rapport,
         date_rapport=date.today(),
-        immatriculation=vehicule.plaque_immatriculation,
-        marque=vehicule.marque,
-        modele=vehicule.modele,
+        immatriculation=immatriculation,
+        marque=vehicule.marque if vehicule else None,
+        modele=vehicule.modele if vehicule else None,
         filiale=filiale,
         nom_chauffeur=user.full_name or user.username,
         kilometrage=kilometrage,
@@ -467,7 +480,7 @@ async def envoyer_rapport(
         db.add(PhotoInspection(rapport_id=rapport.id, position=position, content_type=content_type, data=contenu))
 
     # Le kilométrage relevé met à jour la fiche du véhicule s'il est plus récent
-    if vehicule.kilometrage is None or kilometrage > vehicule.kilometrage:
+    if vehicule and (vehicule.kilometrage is None or kilometrage > vehicule.kilometrage):
         vehicule.kilometrage = kilometrage
 
     # Un envoi clôt les relances en attente
