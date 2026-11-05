@@ -32,6 +32,7 @@ class DemandeIn(BaseModel):
     kilometrage: int = Field(ge=0, le=5_000_000)
     position: str = Field(min_length=1, max_length=255)
     technicien: str = Field(min_length=1, max_length=150)
+    description: str | None = Field(default=None, max_length=2000)   # « Nature » : explication libre
 
 
 class DemandeOut(BaseModel):
@@ -42,6 +43,7 @@ class DemandeOut(BaseModel):
     kilometrage: int
     position: str
     technicien: str
+    description: str | None
     nom_chauffeur: str
     telephone: str | None
     statut: str
@@ -76,7 +78,7 @@ def _alerter_par_email(demande_id: int) -> None:
         lien = (settings.app_url.rstrip("/") + "/demandes") if settings.app_url else ""
         sujet = f"eFlotte : nouvelle demande {nature.lower()} — {d.immatriculation}"
         lignes = [
-            ("Nature", nature), ("Immatriculation", d.immatriculation),
+            ("Type", nature), ("Nature", d.description or "—"), ("Immatriculation", d.immatriculation),
             ("Kilométrage actuel", f"{d.kilometrage:,} km".replace(",", " ")),
             ("Position", d.position), ("Technicien", d.technicien),
             ("Chauffeur", d.nom_chauffeur + (f" ({d.telephone})" if d.telephone else "")),
@@ -123,6 +125,7 @@ def creer_demande(
         user_id=user.id, nature=nature,
         immatriculation=data.immatriculation.strip().upper(),
         kilometrage=data.kilometrage, position=data.position.strip(), technicien=data.technicien.strip(),
+        description=(data.description or "").strip() or None,
         nom_chauffeur=user.full_name or user.username, telephone=user.telephone, statut="NOUVELLE",
     )
     db.add(d)
@@ -165,7 +168,8 @@ def lister(
     if q and q.strip():
         motif = f"%{q.strip()}%"
         req = req.filter(or_(DemandeVehicule.immatriculation.ilike(motif), DemandeVehicule.nom_chauffeur.ilike(motif),
-                             DemandeVehicule.technicien.ilike(motif), DemandeVehicule.position.ilike(motif)))
+                             DemandeVehicule.technicien.ilike(motif), DemandeVehicule.position.ilike(motif),
+                             DemandeVehicule.description.ilike(motif)))
     total = req.count()
     items = req.order_by(DemandeVehicule.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return DemandePage(items=items, total=total)

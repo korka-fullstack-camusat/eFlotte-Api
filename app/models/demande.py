@@ -19,6 +19,7 @@ class DemandeVehicule(Base):
     kilometrage     = Column(Integer, nullable=False)
     position        = Column(String(255), nullable=False)
     technicien      = Column(String(150), nullable=False)
+    description     = Column(Text, nullable=True)        # « Nature » : explication du chauffeur
     nom_chauffeur   = Column(String(150), nullable=False)
     telephone       = Column(String(20), nullable=True)
     statut          = Column(String(20), index=True, nullable=False, default="NOUVELLE")

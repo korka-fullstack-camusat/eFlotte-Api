@@ -64,6 +64,11 @@ with engine.begin() as conn:
     #  rejouées à chaque démarrage, sont supprimées : elles déplaçaient les données
     #  2025 en 2026. Les imports rangent désormais l'année choisie et le mois de
     #  chaque ligne — voir app/annee.py.)
+    # Demandes chauffeurs — explication (« Nature ») saisie dans l'app
+    conn.execute(sqlalchemy.text("""
+        ALTER TABLE demandes_vehicule
+            ADD COLUMN IF NOT EXISTS description TEXT
+    """))
     # SuiviPanne — statut
     conn.execute(sqlalchemy.text("""
         ALTER TABLE suivi_pannes
