@@ -13,10 +13,12 @@ from .import_global_log import ImportGlobalLog
 from .carburant import Carburant
 from .recap_panne import RecapPanneVehicule
 from .inspection import RapportInspection, PhotoInspection, RelanceChecklist
+from .demande import DemandeVehicule, NotificationChauffeur, PushToken
 
 __all__ = [
     "User", "Vehicule", "CoutFlotte", "EntretienVehicule", "EntretienBis",
     "MissionChauffeur", "SuiviDevis", "CheckListVL", "SuiviPanne",
     "Pneumatique", "SuiviSinistre", "ImportGlobalLog", "Carburant",
     "RecapPanneVehicule", "RapportInspection", "PhotoInspection", "RelanceChecklist",
+    "DemandeVehicule", "NotificationChauffeur", "PushToken",
 ]

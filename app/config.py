@@ -21,6 +21,17 @@ class Settings(BaseSettings):
     orange_sms_base_url: str = "https://api.orangesmspro.sn:8443/api"
     orange_sms_verify_ssl: bool = True
 
+    # E-mail (SMTP) — mêmes variables que la plateforme eRH. E-mails désactivés sans EMAIL_HOST.
+    # Valeurs à mettre dans le .env du serveur uniquement.
+    email_host: str = ""
+    email_port: int = 587
+    email_host_user: str = ""
+    email_host_password: str = ""
+    email_use_tls: bool = True
+    email_from: str = ""                     # par défaut : EMAIL_HOST_USER
+    # Destinataires des alertes « nouvelle demande » (remontée / panne / vidange), séparés par des virgules
+    demandes_email_alerte: str = "mciss@camusat.com"
+
     # .env contient aussi les variables du docker-compose (POSTGRES_*, DB_PORT…)
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

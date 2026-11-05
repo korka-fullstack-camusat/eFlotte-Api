@@ -5,13 +5,14 @@ et leur suivi côté plateforme (liste, détail, relances).
 import json
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..models.demande import NotificationChauffeur, PushToken
 from ..models.inspection import PhotoInspection, RapportInspection, RelanceChecklist
 from ..models.user import User
 from ..models.vehicule import Vehicule
@@ -19,6 +20,8 @@ from ..services.auth_service import (
     get_authenticated_user, get_current_user, require_chauffeur, require_editor,
 )
 from ..services.checklist_modele import PHOTOS, modele_public, valider_reponses
+from ..services.notifications import envoyer_push, notifier
+from ..services.sms import ErreurSMS, client_sms, envoyer_sms, sms_actif
 
 router = APIRouter(prefix="/api/inspections", tags=["Checklists mobiles"])
 
@@ -67,7 +70,30 @@ class RelanceOut(BaseModel):
     envoye_par: str | None
     message: str | None
     created_at: datetime
+    sms: str | None = None            # relance unitaire : ENVOYE | ECHEC | NON_CONFIGURE | SANS_NUMERO
+    sms_message: str | None = None
     model_config = {"from_attributes": True}
+
+
+class NotificationOut(BaseModel):
+    id: int
+    type: str
+    titre: str
+    message: str | None
+    data: dict | None
+    created_at: datetime
+    lue_at: datetime | None
+    model_config = {"from_attributes": True}
+
+
+class NotificationsOut(BaseModel):
+    items: list[NotificationOut]
+    non_lues: int
+
+
+class PushTokenIn(BaseModel):
+    token: str
+    platform: str | None = None
 
 
 class VehiculeMini(BaseModel):
@@ -265,6 +291,48 @@ def mon_espace(db: Session = Depends(get_db), user: User = Depends(require_chauf
         relances=relances,
         filiale_precedente=derniers[0].filiale if derniers else None,
     )
+
+
+@router.get("/notifications", response_model=NotificationsOut)
+def mes_notifications(
+    limite: int = Query(30, ge=1, le=100),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_chauffeur),
+):
+    """Dernières notifications du chauffeur (relances, suivi de ses demandes…)."""
+    q = db.query(NotificationChauffeur).filter(NotificationChauffeur.user_id == user.id)
+    non_lues = q.filter(NotificationChauffeur.lue_at.is_(None)).count()
+    items = q.order_by(NotificationChauffeur.created_at.desc(), NotificationChauffeur.id.desc()).limit(limite).all()
+    return NotificationsOut(items=items, non_lues=non_lues)
+
+
+@router.post("/notifications/lues", status_code=204)
+def marquer_lues(db: Session = Depends(get_db), user: User = Depends(require_chauffeur)):
+    db.query(NotificationChauffeur).filter(
+        NotificationChauffeur.user_id == user.id, NotificationChauffeur.lue_at.is_(None)
+    ).update({NotificationChauffeur.lue_at: datetime.now(timezone.utc)}, synchronize_session=False)
+    db.commit()
+
+
+@router.post("/push-token", status_code=204)
+def enregistrer_push(data: PushTokenIn, db: Session = Depends(get_db), user: User = Depends(get_authenticated_user)):
+    """Jeton Expo du téléphone : notifications push distantes (APK construit avec EAS)."""
+    token = data.token.strip()[:255]
+    if not token:
+        raise HTTPException(400, "Jeton vide")
+    existant = db.query(PushToken).filter(PushToken.token == token).first()
+    if existant:
+        existant.user_id, existant.platform = user.id, data.platform
+    else:
+        db.add(PushToken(user_id=user.id, token=token, platform=data.platform))
+    db.commit()
+
+
+@router.post("/push-token/supprimer", status_code=204)
+def supprimer_push(data: PushTokenIn, db: Session = Depends(get_db), _: User = Depends(get_authenticated_user)):
+    """À la déconnexion : ce téléphone ne reçoit plus les notifications du compte."""
+    db.query(PushToken).filter(PushToken.token == data.token.strip()).delete(synchronize_session=False)
+    db.commit()
 
 
 @router.get("/vehicules", response_model=list[VehiculeMini])
@@ -529,18 +597,49 @@ def list_rapports(
     return RapportPage(items=items, total=total)
 
 
+TITRE_RELANCE = "Rappel : checklist véhicule attendue"
+MESSAGE_RELANCE = "Merci d'envoyer la checklist de votre véhicule cette semaine."
+
+
 def _creer_relance(db: Session, chauffeur: User, auteur: User, message: str | None) -> RelanceChecklist:
-    relance = RelanceChecklist(
-        user_id=chauffeur.id,
-        envoye_par=auteur.full_name or auteur.username,
-        message=(message or "").strip()[:500] or None,
-    )
+    """Relance + notification dans l'app chauffeur (SMS et push envoyés par l'appelant)."""
+    texte = (message or "").strip()[:500] or None
+    relance = RelanceChecklist(user_id=chauffeur.id, envoye_par=auteur.full_name or auteur.username, message=texte)
     db.add(relance)
+    notifier(db, chauffeur.id, "RELANCE", TITRE_RELANCE,
+             f"{texte or MESSAGE_RELANCE} ({auteur.full_name or auteur.username})", {"ecran": "NouveauRapport"})
     return relance
 
 
+def _sms_relance(message: str | None) -> str:
+    return f"eFlotte CAMUSAT : {(message or '').strip() or MESSAGE_RELANCE} Ouvrez l'application eFlotte pour l'envoyer."
+
+
+def _envoyer_sms_relance(chauffeur: User, message: str | None, client=None) -> tuple[str, str | None]:
+    if not chauffeur.telephone:
+        return "SANS_NUMERO", "Aucun numéro de téléphone sur le compte"
+    if not sms_actif():
+        return "NON_CONFIGURE", "SMS non configurés sur le serveur"
+    try:
+        envoyer_sms(chauffeur.telephone, _sms_relance(message), client)
+        return "ENVOYE", None
+    except ErreurSMS as e:
+        return "ECHEC", str(e)
+
+
+def _sms_relances_groupees(telephones: list[str], message: str | None) -> None:
+    """Tâche de fond : SMS de relance à plusieurs chauffeurs."""
+    with client_sms() as client:
+        for tel in telephones:
+            try:
+                envoyer_sms(tel, _sms_relance(message), client)
+            except ErreurSMS:
+                pass      # déjà journalisé par envoyer_sms
+
+
 @router.post("/relances", response_model=RelanceOut, status_code=201)
-def relancer(data: RelanceIn, db: Session = Depends(get_db), auteur: User = Depends(require_editor)):
+def relancer(data: RelanceIn, taches: BackgroundTasks, db: Session = Depends(get_db),
+             auteur: User = Depends(require_editor)):
     chauffeur = db.query(User).filter(User.id == data.user_id, User.role == "CHAUFFEUR").first()
     if not chauffeur:
         raise HTTPException(404, "Chauffeur introuvable")
@@ -549,12 +648,19 @@ def relancer(data: RelanceIn, db: Session = Depends(get_db), auteur: User = Depe
     relance = _creer_relance(db, chauffeur, auteur, data.message)
     db.commit()
     db.refresh(relance)
-    return relance
+    # SMS tout de suite (résultat affiché sur la plateforme) ; push en tâche de fond
+    sms, sms_message = _envoyer_sms_relance(chauffeur, data.message)
+    taches.add_task(envoyer_push, [chauffeur.id], TITRE_RELANCE, (data.message or "").strip() or MESSAGE_RELANCE,
+                    {"ecran": "NouveauRapport"})
+    out = RelanceOut.model_validate(relance)
+    out.sms, out.sms_message = sms, sms_message
+    return out
 
 
 @router.post("/relances/en-retard")
 def relancer_en_retard(
     data: RelanceGroupeeIn,
+    taches: BackgroundTasks,
     db: Session = Depends(get_db),
     auteur: User = Depends(require_editor),
 ):
@@ -564,4 +670,11 @@ def relancer_en_retard(
     for c in en_retard:
         _creer_relance(db, c, auteur, data.message)
     db.commit()
-    return {"relances": len(en_retard)}
+    # SMS et push en tâche de fond : la plateforme répond tout de suite
+    telephones = [c.telephone for c in en_retard if c.telephone]
+    if telephones and sms_actif():
+        taches.add_task(_sms_relances_groupees, telephones, data.message)
+    if en_retard:
+        taches.add_task(envoyer_push, [c.id for c in en_retard], TITRE_RELANCE,
+                        (data.message or "").strip() or MESSAGE_RELANCE, {"ecran": "NouveauRapport"})
+    return {"relances": len(en_retard), "sms": len(telephones) if sms_actif() else 0}

@@ -10,6 +10,7 @@ from app.models import (  # noqa: F401 — tous importés pour Base.metadata.cre
     MissionChauffeur, SuiviDevis, CheckListVL, SuiviPanne,
     Pneumatique, SuiviSinistre, ImportGlobalLog, Carburant, RecapPanneVehicule,
     RapportInspection, PhotoInspection, RelanceChecklist,
+    DemandeVehicule, NotificationChauffeur, PushToken,
 )
 from app.services.auth_service import hash_password
 

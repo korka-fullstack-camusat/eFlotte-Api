@@ -62,6 +62,13 @@ services:
       ORANGE_SMS_SIGNATURE: ${ORANGE_SMS_SIGNATURE:-CAMUSAT SN}
       ORANGE_SMS_BASE_URL: ${ORANGE_SMS_BASE_URL:-https://api.orangesmspro.sn:8443/api}
       ORANGE_SMS_VERIFY_SSL: ${ORANGE_SMS_VERIFY_SSL:-True}
+      EMAIL_HOST: ${EMAIL_HOST:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-True}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+      DEMANDES_EMAIL_ALERTE: ${DEMANDES_EMAIL_ALERTE:-mciss@camusat.com}
     depends_on:
       db:
         condition: service_healthy
