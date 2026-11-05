@@ -70,6 +70,9 @@ def normaliser_telephone(brut) -> str | None:
 
 CODES_SUCCES = {0, 200}
 CODE_CLE_INVALIDE = 121
+CODE_PARAMETRE_MANQUANT = 107
+# Codes pour lesquels on essaie la combinaison suivante (format ou clé non reconnus)
+CODES_A_REESSAYER = {CODE_CLE_INVALIDE, CODE_PARAMETRE_MANQUANT}
 
 
 def _statuts_orange(data) -> list[tuple[int | None, str]]:
@@ -99,12 +102,16 @@ def _statuts_orange(data) -> list[tuple[int | None, str]]:
 def _reponse_en_erreur(r: httpx.Response) -> tuple[int | None, str] | None:
     """(code Orange, message) si la réponse signale un échec, sinon None.
     Orange répond HTTP 200 même en cas d'erreur : le code est dans status_CODE."""
-    if r.status_code >= 400:
-        return None, f"HTTP {r.status_code} : {r.text[:500]}"
     try:
         data = r.json()
     except ValueError:
+        if r.status_code >= 400:
+            return None, f"HTTP {r.status_code} : {r.text[:500]}"
         return None if r.text.strip() else (None, "Réponse vide d'Orange")
+    if r.status_code >= 400:
+        # Erreur HTTP : garder le code d'Orange s'il y en a un (ex. 107 paramètre manquant)
+        codes = [c for c, _t in _statuts_orange(data) if c is not None]
+        return (codes[0] if codes else None), f"HTTP {r.status_code} : {r.text[:500]}"
     for code, texte in _statuts_orange(data):
         if code is not None and code not in CODES_SUCCES:
             return code, f"Refusé par Orange (code {code}) : {texte}"
@@ -124,13 +131,16 @@ def _reponse_en_erreur(r: httpx.Response) -> tuple[int | None, str] | None:
 _ORDRE = ("token", "subject", "signature", "recipient", "content", "timestamp")
 # (nom, champs concaténés, secret, algorithme, paramètre algo, envoi)
 #   algorithme : sha1 / md5 / sha256 = HMAC ; "md5-simple" = MD5 de (champs + clé d'accès)
-#   envoi : "form" (formulaire POST), "json" (corps JSON POST), "query" (paramètres dans l'URL, POST)
+#   envoi : "form" (formulaire POST), "json" / "json-num" (corps JSON POST, timestamp en texte /
+#   en nombre), "query" (paramètres dans l'URL, POST)
 VARIANTES_CLE = [
     ("hmac-sha1 / formulaire", _ORDRE, "access_key", "sha1", None, "form"),
+    ("hmac-sha1 / json (timestamp numérique)", _ORDRE, "access_key", "sha1", None, "json-num"),
     ("hmac-sha1 / json", _ORDRE, "access_key", "sha1", None, "json"),
     ("hmac-sha1 / url", _ORDRE, "access_key", "sha1", None, "query"),
     ("hmac-md5 / formulaire", _ORDRE, "access_key", "md5", "md5", "form"),
-    ("hmac-md5 / json", _ORDRE, "access_key", "md5", "md5", "json"),
+    ("hmac-md5 / json (timestamp numérique)", _ORDRE, "access_key", "md5", "md5", "json-num"),
+    ("hmac-sha1 secret=token / json (timestamp numérique)", _ORDRE, "token", "sha1", None, "json-num"),
     ("md5-simple / formulaire", _ORDRE, "access_key", "md5-simple", "md5", "form"),
     ("hmac-sha1 secret=token / formulaire", _ORDRE, "token", "sha1", None, "form"),
     ("hmac-sha1 sans token / formulaire", _ORDRE[1:], "access_key", "sha1", None, "form"),
@@ -166,6 +176,9 @@ def _poster(client: httpx.Client, variante, champs: dict) -> httpx.Response:
         "auth": (settings.orange_sms_login, settings.orange_sms_token),
         "headers": {"Accept": "application/json"},
     }
+    if envoi == "json-num":
+        # Corps JSON avec timestamp en nombre (l'API ignore un timestamp en texte : code 107)
+        return client.post(settings.orange_sms_base_url, json={**champs, "timestamp": int(champs["timestamp"])}, **options)
     if envoi == "json":
         return client.post(settings.orange_sms_base_url, json=champs, **options)
     if envoi == "query":
@@ -210,11 +223,11 @@ def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None
             code, _texte = erreur
             log.warning("SMS vers %s : combinaison « %s » refusée : HTTP %s %s",
                         destinataire[:5] + "…", variante[0], r.status_code, r.text[:600])
-            if code != CODE_CLE_INVALIDE:
-                break     # autre erreur que la clé : inutile d'essayer d'autres calculs
+            if code not in CODES_A_REESSAYER:
+                break     # autre erreur (identifiants, solde…) : inutile d'essayer d'autres formats
         message_erreur = erreur[1] if erreur else "Échec de l'envoi"
-        if erreur and erreur[0] == CODE_CLE_INVALIDE:
-            message_erreur += f" ({essais} façons de calculer la clé essayées — voir les logs)"
+        if erreur and erreur[0] in CODES_A_REESSAYER:
+            message_erreur += f" ({essais} combinaisons format / clé essayées — voir les logs)"
         raise ErreurSMS(message_erreur)
     finally:
         if propre:
