@@ -115,30 +115,33 @@ def _reponse_en_erreur(r: httpx.Response) -> tuple[int | None, str] | None:
     return None
 
 
-# Calcul de la clé (paramètre « key » = HMAC) : Orange ne publie pas sa documentation.
-# La 1re variante est celle d'origine ; si Orange répond 121 (« KEY invalide »), les
-# suivantes sont essayées une à une (une requête refusée n'envoie aucun SMS) et celle
-# qui est acceptée est retenue pour la suite (et écrite dans les logs).
-# Chaque variante : (nom, ordre des champs concaténés, secret HMAC, algorithme, paramètre algo)
+# Calcul de la clé (paramètre « key ») et format d'envoi : Orange ne publie pas sa
+# documentation. La 1re combinaison est la formule habituelle (HMAC-SHA1 de
+# token+subject+signature+recipient+content+timestamp avec la clé d'accès), envoyée en
+# formulaire. Si Orange répond 121 (« KEY invalide »), les combinaisons suivantes sont
+# essayées une à une (une requête refusée n'envoie aucun SMS) ; celle qui est acceptée
+# est retenue pour les envois suivants et écrite dans les logs.
+_ORDRE = ("token", "subject", "signature", "recipient", "content", "timestamp")
+# (nom, champs concaténés, secret, algorithme, paramètre algo, envoi)
+#   algorithme : sha1 / md5 / sha256 = HMAC ; "md5-simple" = MD5 de (champs + clé d'accès)
+#   envoi : "form" (formulaire POST), "json" (corps JSON POST), "query" (paramètres dans l'URL, POST)
 VARIANTES_CLE = [
-    ("sha1-token-subject-signature-recipient-content-timestamp/access_key",
-     ("token", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha1", None),
-    ("sha1-…/token",
-     ("token", "subject", "signature", "recipient", "content", "timestamp"), "token", "sha1", None),
-    ("sha1-sans-token/access_key",
-     ("subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha1", None),
-    ("sha1-login-subject-signature-recipient-content-timestamp/access_key",
-     ("login", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha1", None),
-    ("md5-token-subject-signature-recipient-content-timestamp/access_key",
-     ("token", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "md5", "md5"),
-    ("sha256-token-subject-signature-recipient-content-timestamp/access_key",
-     ("token", "subject", "signature", "recipient", "content", "timestamp"), "access_key", "sha256", "sha256"),
+    ("hmac-sha1 / formulaire", _ORDRE, "access_key", "sha1", None, "form"),
+    ("hmac-sha1 / json", _ORDRE, "access_key", "sha1", None, "json"),
+    ("hmac-sha1 / url", _ORDRE, "access_key", "sha1", None, "query"),
+    ("hmac-md5 / formulaire", _ORDRE, "access_key", "md5", "md5", "form"),
+    ("hmac-md5 / json", _ORDRE, "access_key", "md5", "md5", "json"),
+    ("md5-simple / formulaire", _ORDRE, "access_key", "md5-simple", "md5", "form"),
+    ("hmac-sha1 secret=token / formulaire", _ORDRE, "token", "sha1", None, "form"),
+    ("hmac-sha1 sans token / formulaire", _ORDRE[1:], "access_key", "sha1", None, "form"),
+    ("hmac-sha1 login au lieu du token / formulaire",
+     ("login",) + _ORDRE[1:], "access_key", "sha1", None, "form"),
 ]
 _variante_retenue: int | None = None
 
 
 def _champs(variante, destinataire: str, message: str, sujet: str) -> dict:
-    _nom, ordre, secret, algo, param_algo = variante
+    _nom, ordre, secret, algo, param_algo, _envoi = variante
     valeurs = {
         "token": settings.orange_sms_token, "login": settings.orange_sms_login,
         "subject": sujet, "signature": settings.orange_sms_signature,
@@ -146,12 +149,28 @@ def _champs(variante, destinataire: str, message: str, sujet: str) -> dict:
     }
     cle_secrete = settings.orange_sms_access_key if secret == "access_key" else settings.orange_sms_token
     a_signer = "".join(valeurs[c] for c in ordre)
-    cle = hmac.new(cle_secrete.encode("utf-8"), a_signer.encode("utf-8"), getattr(hashlib, algo)).hexdigest()
-    champs = {k: valeurs[k] for k in ("token", "subject", "signature", "recipient", "content", "timestamp")}
+    if algo == "md5-simple":
+        cle = hashlib.md5((a_signer + cle_secrete).encode("utf-8")).hexdigest()
+    else:
+        cle = hmac.new(cle_secrete.encode("utf-8"), a_signer.encode("utf-8"), getattr(hashlib, algo)).hexdigest()
+    champs = {k: valeurs[k] for k in _ORDRE}
     champs["key"] = cle
     if param_algo:
         champs["algo"] = param_algo
     return champs
+
+
+def _poster(client: httpx.Client, variante, champs: dict) -> httpx.Response:
+    envoi = variante[5]
+    options = {
+        "auth": (settings.orange_sms_login, settings.orange_sms_token),
+        "headers": {"Accept": "application/json"},
+    }
+    if envoi == "json":
+        return client.post(settings.orange_sms_base_url, json=champs, **options)
+    if envoi == "query":
+        return client.post(settings.orange_sms_base_url, params=champs, **options)
+    return client.post(settings.orange_sms_base_url, data=champs, **options)
 
 
 def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None,
@@ -168,15 +187,12 @@ def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None
         [i for i in range(len(VARIANTES_CLE)) if i != _variante_retenue]
     try:
         erreur = None
+        essais = 0
         for i in ordre:
             variante = VARIANTES_CLE[i]
+            essais += 1
             try:
-                r = client.post(
-                    settings.orange_sms_base_url,
-                    data=_champs(variante, destinataire, message, sujet),
-                    auth=(settings.orange_sms_login, settings.orange_sms_token),
-                    headers={"Accept": "application/json"},
-                )
+                r = _poster(client, variante, _champs(variante, destinataire, message, sujet))
             except httpx.HTTPError as e:
                 # Cause exacte (certificat SSL refusé, délai dépassé, connexion refusée…)
                 cause = str(e).strip() or e.__class__.__name__
@@ -187,16 +203,19 @@ def envoyer_sms(telephone: str, message: str, client: httpx.Client | None = None
             erreur = _reponse_en_erreur(r)
             if not erreur:
                 if _variante_retenue != i:
-                    log.warning("SMS : calcul de clé accepté par Orange = variante « %s »", variante[0])
+                    log.warning("SMS : combinaison acceptée par Orange = « %s »", variante[0])
                 _variante_retenue = i
                 log.info("SMS vers %s : HTTP %s %s", destinataire[:5] + "…", r.status_code, r.text[:1000])
                 return r.text[:1000]
-            code, texte = erreur
-            log.warning("SMS vers %s : variante « %s » refusée : HTTP %s %s",
-                        destinataire[:5] + "…", variante[0], r.status_code, r.text[:1500])
+            code, _texte = erreur
+            log.warning("SMS vers %s : combinaison « %s » refusée : HTTP %s %s",
+                        destinataire[:5] + "…", variante[0], r.status_code, r.text[:600])
             if code != CODE_CLE_INVALIDE:
                 break     # autre erreur que la clé : inutile d'essayer d'autres calculs
-        raise ErreurSMS(erreur[1] if erreur else "Échec de l'envoi")
+        message_erreur = erreur[1] if erreur else "Échec de l'envoi"
+        if erreur and erreur[0] == CODE_CLE_INVALIDE:
+            message_erreur += f" ({essais} façons de calculer la clé essayées — voir les logs)"
+        raise ErreurSMS(message_erreur)
     finally:
         if propre:
             client.close()
