@@ -16,7 +16,7 @@
 	}
 
 	# Application mobile : fichiers déposés dans ./telechargements sur le serveur
-	# (ex. /telechargements/eflotte.apk), téléchargés directement.
+	# (ex. /telechargements/eflotte-camusat.apk), téléchargés directement.
 	handle_path /telechargements/* {
 		root * /srv/telechargements
 		@apk path *.apk

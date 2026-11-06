@@ -2,9 +2,9 @@
 
 Déposer ici l'APK de l'application mobile, sous le nom exact :
 
-    eflotte.apk
+    eflotte-camusat.apk
 
-Il est alors téléchargeable sur https://eflotte.camusatsn.com/telechargements/eflotte.apk
+Il est alors téléchargeable sur https://eflotte.camusatsn.com/telechargements/eflotte-camusat.apk
 et via le bouton de la page https://eflotte.camusatsn.com/app.
 
 Les fichiers .apk ne sont pas mis dans Git (voir .gitignore) : on les copie sur le serveur.
