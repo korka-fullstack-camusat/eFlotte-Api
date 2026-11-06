@@ -36,6 +36,13 @@ def envoyer_push(user_ids: list[int], titre: str, message: str | None, data: dic
             try:
                 r = httpx.post(EXPO_PUSH_URL, json=messages[i:i + 100], timeout=15)
                 tickets = (r.json() or {}).get("data") or []
+                erreurs = [t for t in tickets if isinstance(t, dict) and t.get("status") == "error"]
+                if erreurs:
+                    # Ex. InvalidCredentials = clé FCM (Firebase) absente du projet EAS
+                    log.warning("Push Expo : %d échec(s) — %s", len(erreurs),
+                                "; ".join(f"{(t.get('details') or {}).get('error', '?')}: {t.get('message', '')}" for t in erreurs[:3]))
+                else:
+                    log.info("Push Expo envoyé à %d appareil(s)", len(messages[i:i + 100]))
                 # Jetons devenus invalides (application désinstallée…) : on les oublie
                 morts = [m["to"] for m, t in zip(messages[i:i + 100], tickets)
                          if isinstance(t, dict) and (t.get("details") or {}).get("error") == "DeviceNotRegistered"]
