@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # Adresse de la plateforme envoyée dans le SMS (ex : https://eflotte.camusatsn.com)
     app_url: str = ""
     # Lien de téléchargement de l'application mobile Android (APK) : prioritaire sur app_url
-    app_mobile_url: str = ""
+    app_mobile_url: str = "https://eflotte.camusatsn.com/app"   # lien de téléchargement de l'app (SMS)
 
     # Orange SMS Pro Sénégal — SMS désactivés tant que login / token / clé sont vides.
     # Valeurs à mettre dans le .env du serveur uniquement.

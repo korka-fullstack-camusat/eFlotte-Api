@@ -173,5 +173,6 @@ def message_identifiants(username: str, mot_de_passe: str) -> str:
         f"- Mot de passe : {mot_de_passe}\n"
         "Important : Pour des raisons de sécurité, veuillez modifier votre mot de passe "
         "dès votre première connexion.\n"
-        "Bienvenue sur eFlotte !"
+        + (f"Téléchargez l'application : {lien}\n" if (lien := settings.app_mobile_url.strip()) else "")
+        + "Bienvenue sur eFlotte !"
     )
