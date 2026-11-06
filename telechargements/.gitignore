@@ -1,1 +1,3 @@
+# Seul l’APK publié peut être versionné (déploiement par git pull) ; les autres .apk restent ignorés
 *.apk
+!eflotte-camusat.apk

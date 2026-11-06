@@ -7,5 +7,6 @@ Déposer ici l'APK de l'application mobile, sous le nom exact :
 Il est alors téléchargeable sur https://eflotte.camusatsn.com/telechargements/eflotte-camusat.apk
 et via le bouton de la page https://eflotte.camusatsn.com/app.
 
-Les fichiers .apk ne sont pas mis dans Git (voir .gitignore) : on les copie sur le serveur.
+Deux façons de le publier : le copier directement sur le serveur, ou le committer ici
+(`git add -f` n'est pas nécessaire pour ce nom : il est autorisé dans .gitignore) puis `git pull` sur le serveur.
 Remplacer le fichier suffit pour publier une nouvelle version (pas de redémarrage).
