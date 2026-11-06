@@ -15,6 +15,17 @@
 		reverse_proxy web:8050
 	}
 
+	# Application mobile : fichiers déposés dans ./telechargements sur le serveur
+	# (ex. /telechargements/eflotte.apk), téléchargés directement.
+	handle_path /telechargements/* {
+		root * /srv/telechargements
+		@apk path *.apk
+		header @apk Content-Type application/vnd.android.package-archive
+		header @apk Content-Disposition "attachment; filename=\"eFlotte-Camusat.apk\""
+		header Cache-Control "no-cache"
+		file_server
+	}
+
 	# Site (front React servi par le conteneur eflotte-front)
 	handle {
 		reverse_proxy front:80

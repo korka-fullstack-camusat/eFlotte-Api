@@ -122,3 +122,20 @@ docker logs -f --tail 100 eflotte-api      # logs API
 docker logs -f --tail 100 eflotte-caddy    # logs HTTP / certificats
 docker exec -it eflotte-api python create_admin.py
 ```
+
+## Application mobile : publier l'APK (page https://eflotte.camusatsn.com/app)
+
+La page `/app` (front) propose le bouton « Télécharger l'application ». Le fichier est servi par Caddy
+depuis le dossier `telechargements/` de ce dépôt sur le serveur (hors Git), sous le nom **`eflotte.apk`**.
+
+1. Construire l'APK : dans `eFlotte-Mobile`, `npm run build:apk` (EAS), puis télécharger l'APK depuis le lien donné par EAS.
+2. Le copier sur le serveur :
+   ```bash
+   scp eflotte-xxx.apk utilisateur@serveur:/srv/www/htdocs/eflotte-api/telechargements/eflotte.apk
+   ```
+   (ou, sur le serveur : `curl -L -o /srv/www/htdocs/eflotte-api/telechargements/eflotte.apk "<lien EAS>"`)
+3. La première fois seulement (nouveau dossier monté dans Caddy) :
+   ```bash
+   cd /srv/www/htdocs/eflotte-api && git pull && docker compose -f docker-compose.prod.yml up -d caddy
+   ```
+Pour une nouvelle version, remplacer `eflotte.apk` suffit : pas de redémarrage. Lien à partager : https://eflotte.camusatsn.com/app
