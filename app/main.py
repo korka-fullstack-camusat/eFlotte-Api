@@ -7,6 +7,7 @@ from .routers import (
     auth, vehicules, couts, entretiens, entretiens_bis, missions_chauffeur,
     suivi_devis, checklists_vl, suivi_pannes, pneumatiques,
     import_global, suivi_sinistres, carburant, inspections, comptes_chauffeurs, annees, demandes,
+    telechargements,
 )
 from .annee import definir_annee_requete
 
@@ -70,6 +71,7 @@ app.include_router(inspections.router)
 app.include_router(comptes_chauffeurs.router)
 app.include_router(annees.router)
 app.include_router(demandes.router)
+app.include_router(telechargements.router)
 
 
 @app.get("/")
