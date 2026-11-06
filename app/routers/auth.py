@@ -8,6 +8,7 @@ from sqlalchemy import func
 from ..config import settings
 from ..database import get_db
 from ..models.user import User
+from ..services.attribution import cle_plaque, message_deja_attribue, titulaire_plaque
 from ..services.auth_service import (
     verify_password, hash_password, create_access_token,
     get_authenticated_user, get_current_user, require_admin,
@@ -174,6 +175,9 @@ def create_user(
     email = _vide_en_none(data.email)
     if email and db.query(User).filter(User.email == email).first():
         raise HTTPException(400, "Email déjà utilisé par un autre compte")
+    plaque = _vide_en_none(data.vehicule_plaque)
+    if plaque and (titulaire := titulaire_plaque(db, plaque)):
+        raise HTTPException(400, message_deja_attribue(plaque, titulaire))
     user = User(
         username=data.username,
         full_name=_vide_en_none(data.full_name),
@@ -227,7 +231,11 @@ def update_user(
             raise HTTPException(400, "Email déjà utilisé par un autre compte")
         user.email = email
     if data.vehicule_plaque is not None:
-        user.vehicule_plaque = _vide_en_none(data.vehicule_plaque)
+        plaque = _vide_en_none(data.vehicule_plaque)
+        change = cle_plaque(plaque) != cle_plaque(user.vehicule_plaque)
+        if plaque and change and (titulaire := titulaire_plaque(db, plaque, sauf_user_id=user.id)):
+            raise HTTPException(400, message_deja_attribue(plaque, titulaire))
+        user.vehicule_plaque = plaque
     if data.filiale is not None:
         user.filiale = _vide_en_none(data.filiale)
     if data.telephone is not None:

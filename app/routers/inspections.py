@@ -15,6 +15,7 @@ from ..database import get_db
 from ..models.demande import DemandeVehicule, NotificationChauffeur, PushToken
 from ..models.inspection import PhotoInspection, RapportInspection, RelanceChecklist
 from ..models.user import User
+from ..services.attribution import titulaire_plaque
 from ..models.vehicule import Vehicule
 from ..services.auth_service import (
     get_authenticated_user, get_current_user, require_chauffeur, require_editor,
@@ -510,7 +511,8 @@ async def envoyer_rapport(
         .order_by(RapportInspection.created_at.desc()).first()
     )
     filiale = user.filiale or (precedent[0] if precedent else None)
-    if not user.vehicule_plaque and vehicule:
+    # 1er rapport d'un compte sans véhicule : on le lui attribue, s'il n'est pas déjà à un autre
+    if not user.vehicule_plaque and vehicule and not titulaire_plaque(db, vehicule.plaque_immatriculation, sauf_user_id=user.id):
         user.vehicule_plaque = vehicule.plaque_immatriculation
 
     rapport = RapportInspection(

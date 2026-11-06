@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..database import get_db
 from ..models.user import User
+from ..services.attribution import titulaire_plaque
 from ..models.vehicule import Vehicule
 from ..services.auth_service import hash_password, require_admin
 from ..services.sms import ErreurSMS, client_sms, envoyer_sms, message_identifiants, normaliser_telephone, sms_actif
@@ -173,6 +174,7 @@ async def importer(
 
     plaques = {p for (p,) in db.query(Vehicule.plaque_immatriculation).all()}
     plaques_norm = {p.replace(" ", "").replace("-", "").upper(): p for p in plaques}
+    plaques_prises: set[str] = set()   # véhicules attribués dans ce même fichier
     noms_pris = {u.lower() for (u,) in db.query(User.username).all()}
     tels_pris = {t for (t,) in db.query(User.telephone).filter(User.telephone.isnot(None)).all()}
     emails_pris = {e.lower() for (e,) in db.query(User.email).filter(User.email.isnot(None)).all()}
@@ -214,6 +216,11 @@ async def importer(
             plaque = plaques_norm.get(val("plaque").replace(" ", "").replace("-", "").upper())
             if not plaque:
                 avertissement = f"Véhicule {val('plaque')} absent de la flotte : non attribué"
+            elif plaque in plaques_prises or titulaire_plaque(db, plaque):
+                avertissement = f"Véhicule {plaque} déjà attribué à un autre compte : non attribué"
+                plaque = None
+            else:
+                plaques_prises.add(plaque)
 
         user = User(
             username=username, full_name=nom, email=email, telephone=tel,
