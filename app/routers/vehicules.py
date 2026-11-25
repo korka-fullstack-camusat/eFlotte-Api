@@ -1,11 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException
+import io
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from ..database import get_db
 from ..models.user import User
 from ..models.vehicule import Vehicule
 from ..schemas.vehicule import VehiculeOut, VehiculeCreate, VehiculeUpdate
-from ..services.auth_service import get_current_user, require_editor
+from ..services.auth_service import get_current_user, require_admin, require_editor
+from ..services.import_vehicules import FichierInvalide, ajouter_manquants, lire_excel
 
 router = APIRouter(prefix="/api/vehicules", tags=["Flotte — Véhicules"])
 
@@ -61,6 +64,22 @@ def create_vehicule(
     vehicule = Vehicule(**data.model_dump())
     db.add(vehicule); db.commit(); db.refresh(vehicule)
     return vehicule
+
+
+@router.post("/import-manquants")
+async def importer_manquants(
+    file: UploadFile = File(...),
+    appliquer: bool = Form(False),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """Export Excel des véhicules : liste (puis ajoute, si appliquer) les plaques absentes de la base.
+    Les véhicules existants ne sont jamais modifiés ni supprimés."""
+    try:
+        lignes = lire_excel(io.BytesIO(await file.read()))
+    except FichierInvalide as e:
+        raise HTTPException(400, str(e))
+    return ajouter_manquants(db, lignes, appliquer)
 
 
 @router.patch("/{vehicule_id}", response_model=VehiculeOut)
