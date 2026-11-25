@@ -123,6 +123,16 @@ docker logs -f --tail 100 eflotte-caddy    # logs HTTP / certificats
 docker exec -it eflotte-api python create_admin.py
 ```
 
+### Ajouter les véhicules manquants depuis l'export Excel
+
+N'ajoute que les plaques absentes de la base ; rien n'est modifié ni supprimé.
+
+```bash
+docker cp Camusat_Senegal_vehicles_2026.11.24.xlsx eflotte-api:/tmp/vehicules.xlsx
+docker exec -it eflotte-api python ajouter_vehicules_excel.py /tmp/vehicules.xlsx              # aperçu
+docker exec -it eflotte-api python ajouter_vehicules_excel.py /tmp/vehicules.xlsx --appliquer  # écriture
+```
+
 ## Application mobile : publier l'APK (page https://eflotte.camusatsn.com/app)
 
 La page `/app` (front) propose le bouton « Télécharger l'application ». Le fichier est servi par Caddy
