@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..database import SessionLocal, get_db
-from ..models.demande import NATURES_DEMANDE, STATUTS_DEMANDE, DemandeVehicule
+from ..models.demande import NATURES_DEMANDE, STATUTS_DEMANDE, DemandeVehicule, NotificationChauffeur
 from ..models.user import User
 from ..services.auth_service import get_current_user, require_chauffeur, require_editor
 from ..services.email import ErreurEmail, envoyer_email
@@ -230,3 +230,17 @@ def mettre_a_jour(
     db.commit()
     db.refresh(d)
     return d
+
+
+@router.delete("/{demande_id}", status_code=204)
+def supprimer(demande_id: int, db: Session = Depends(get_db), _: User = Depends(require_editor)):
+    """Supprime la demande et les notifications du chauffeur qui y renvoient."""
+    d = db.get(DemandeVehicule, demande_id)
+    if not d:
+        raise HTTPException(404, "Demande introuvable")
+    if d.user_id:
+        for n in db.query(NotificationChauffeur).filter(NotificationChauffeur.user_id == d.user_id):
+            if (n.data or {}).get("demande_id") == d.id:
+                db.delete(n)
+    db.delete(d)
+    db.commit()
